@@ -6,6 +6,9 @@ C2O reads real-time data from connected USB steering wheels, Bluetooth gamepads,
 
 C2O was originally developed as a versatile solution for mapping physical simulation hardware to Massive Loop, and features **two-way OSC communication**, allowing remote software to send Force Feedback (FFB) commands back to the application to dynamically adjust steering wheel resistance in real-time.
 
+Youtube Video Demo :
+[![Massive Loop | OSC Vehicle Showcase](https://img.youtube.com/vi/9N-i8Vs3JMc/0.jpg)](https://www.youtube.com/watch?v=9N-i8Vs3JMc)
+
 ## Key Features
 
 * **Universal Hardware Support:** Powered by a PySDL2 backend for direct, low-level access to device haptics and broad compatibility (XInput, DirectInput, etc.).
