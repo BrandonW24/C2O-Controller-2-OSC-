@@ -55,6 +55,8 @@ class OscWheelApp:
         # Configuration Variables
         self.axis_config = {}
         self.button_vars = {}
+        self.button_labels = {}           # NEW: Track button labels to rename them dynamically
+        self.current_button_map = {i: f"Btn {i}" for i in range(24)} # NEW: Track active names for logging
         self.hat_vars = {}
         self.setting_widgets = [] 
         self.config_file = "config.json"
@@ -312,7 +314,12 @@ class OscWheelApp:
         for i in range(24):
             col = (i // 12) * 2
             row = i % 12
-            tk.Label(grid_frame, text=f"Btn {i} ->").grid(row=row, column=col, sticky="e", pady=2)
+            
+            # --- UPDATED: Track UI labels in a dict ---
+            lbl = tk.Label(grid_frame, text=f"Btn {i} ->")
+            lbl.grid(row=row, column=col, sticky="e", pady=2)
+            self.button_labels[i] = lbl 
+            
             var = tk.StringVar(value=str(i))
             ent = tk.Entry(grid_frame, textvariable=var, width=5)
             ent.grid(row=row, column=col+1, padx=(0, 20), pady=2)
@@ -636,7 +643,7 @@ class OscWheelApp:
 
         content = [
                     ("Controller 2 OSC \n", "h1"),
-                    ("Version 2.2.0\n", "code"),
+                    ("Version 2.2.1\n", "code"),
                     ("\n C2O is a lightweight, GUI-driven Python application designed to seamlessly bridge the gap between physical hardware and digital environments. It reads real-time data from connected USB steering wheels, Bluetooth gamepads, and joysticks. Capturing everything from continuous analog axes (like pedals and throttles) to discrete button presses and D-pad movements.\n\n", ""),
                     ("The application translates and broadcasts these inputs over a local network using the Open Sound Control (OSC) protocol, ensuring low-latency communication without the need for heavy middleware.\n\n", ""),
                     ("C2O was developed as, and aims to be a versatile solution for mapping physical simulation hardware to Massive Loop.\n\n", ""),
@@ -683,6 +690,9 @@ class OscWheelApp:
                     ("Adjust the static friction dynamically.\n", "code"),
                     ("\n\n", ""),
 
+                    ("Version 2.2.1 Update Log\n", "h2"),
+                    ("• Added true button names for the devices buttons rather than the generic BTN it was prior.\n", "bullet"),
+
                     ("Version 2.2.0 Update Log\n", "h2"),
                     ("• Added Ability to remap axis binding\n", "bullet"),
                     ("• Added ability to remap D-pad bindings for steering wheels (not needed for normal controllers)\n", "bullet"),
@@ -724,11 +734,6 @@ class OscWheelApp:
 
                     ("Version 1.0 Log\n", "h2"),
                     ("• Terminal command, uses Pygame to autodetect the first controller it finds converts and outputs to script defined address & port.\n\n", "bullet"),
-                    
-                    ("Helpful Resources\n", "h2"),
-                    ("• https://pysdl2.readthedocs.io/en/0.9.13/\n", "bullet"),
-                    ("• https://pillow.readthedocs.io/en/stable/\n", "bullet"),
-                    ("• https://docs.python.org/3/library/tkinter.html\n", "bullet"),
                     
                     ("Helpful Resources\n", "h2"),
                     ("• https://pysdl2.readthedocs.io/en/0.9.13/\n", "bullet"),
@@ -848,6 +853,39 @@ class OscWheelApp:
                 if idx in self.hat_vars:
                     self.hat_vars[idx].set(value)
 
+    # --- NEW: Dynamic Label Map Generator ---
+    def _update_button_labels(self, name):
+        name_lower = name.lower()
+        
+        is_ps = any(x in name_lower for x in ["playstation", "dualshock", "dualsense", "ps4", "ps5"])
+        is_nintendo = any(x in name_lower for x in ["nintendo", "switch", "pro controller", "joy-con"])
+        is_xbox = any(x in name_lower for x in ["xbox", "xinput"])
+        is_g29 = any(x in name_lower for x in ["g29", "g920", "g923"])
+        
+        self.current_button_map.clear()
+        
+        for i in range(24):
+            btn_name = f"Btn {i}"
+            
+            if is_ps:
+                map_dict = {0: "Square", 1: "Cross", 2: "Circle", 3: "Triangle", 4: "L1", 5: "R1", 6: "L2", 7: "R2", 8: "Share", 9: "Options", 10: "L3", 11: "R3", 12: "PS", 13: "Pad"}
+                btn_name = map_dict.get(i, f"Btn {i}")
+            elif is_nintendo:
+                map_dict = {0: "B", 1: "A", 2: "Y", 3: "X", 4: "L", 5: "R", 6: "ZL", 7: "ZR", 8: "-", 9: "+", 10: "L3", 11: "R3", 12: "Home", 13: "Capture"}
+                btn_name = map_dict.get(i, f"Btn {i}")
+            elif is_g29:
+                map_dict = {0: "Cross/A", 1: "Square/X", 2: "Circle/B", 3: "Triangle/Y", 4: "R-Paddle", 5: "L-Paddle", 6: "R2/RT", 7: "L2/LT", 8: "Share", 9: "Options", 10: "R3", 11: "L3", 19: "+", 20: "-", 21: "Dial R", 22: "Dial L", 23: "Enter"}
+                btn_name = map_dict.get(i, f"Btn {i}")
+            elif is_xbox or "controller" in name_lower or "gamepad" in name_lower:
+                # Default to XInput map for generics
+                map_dict = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB", 6: "Back", 7: "Start", 8: "LS", 9: "RS", 10: "Guide"}
+                btn_name = map_dict.get(i, f"Btn {i}")
+                
+            self.current_button_map[i] = btn_name
+            
+            # Apply to GUI
+            if i in self.button_labels:
+                self.button_labels[i].config(text=f"{btn_name} ->")
 
     def refresh_devices(self):
         self._close_devices()
@@ -865,6 +903,7 @@ class OscWheelApp:
             self.device_dropdown.current(0)
             self._populate_axes_frame(0)
             self._populate_preview_frame(0)
+            self._update_button_labels("none") # Reset visual maps
             self.ffb_frame.pack_forget() 
         else:
             dropdown_values = []
@@ -911,6 +950,9 @@ class OscWheelApp:
             is_string_wheel = any(kw in name for kw in wheel_keywords)
             
             self.is_wheel = is_type_wheel or is_string_wheel
+
+            # Execute dynamic labels
+            self._update_button_labels(name)
 
             self.haptic = sdl2.SDL_HapticOpenFromJoystick(self.joystick)
             has_ffb = False
@@ -1122,11 +1164,13 @@ class OscWheelApp:
             
         for i in sorted(self.prev_buttons.keys()):
             mapped_i = self.get_button_id(i)
-            self.log_area.insert(tk.END, f"Btn {i} (OSC ID {mapped_i}): {self.prev_buttons[i]}\n")
+            # Fetch mapped name for terminal display
+            btn_name = self.current_button_map.get(i, f"Btn {i}")
+            self.log_area.insert(tk.END, f"{btn_name} (OSC ID {mapped_i}): {self.prev_buttons[i]}\n")
             
         for i in sorted(self.prev_hats.keys()):
-                    mapped_i = self.get_hat_id(i)
-                    self.log_area.insert(tk.END, f"Hat {i} (OSC ID {mapped_i}): {self.prev_hats[i]}\n")
+            mapped_i = self.get_hat_id(i)
+            self.log_area.insert(tk.END, f"Hat {i} (OSC ID {mapped_i}): {self.prev_hats[i]}\n")
             
         self.log_area.config(state='disabled')
 
@@ -1336,6 +1380,7 @@ class OscWheelApp:
                 
                 self.client.send_message(self.osc_address, msg_args)
                 if self.output_mode.get() == "scroll":
+                    # Optionally use dynamic name here, but raw OSC payload remains unchanged!
                     self.log(f"{self.osc_address} {msg_args}")
                 
                 state_changed = True
