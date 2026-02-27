@@ -55,8 +55,8 @@ class OscWheelApp:
         # Configuration Variables
         self.axis_config = {}
         self.button_vars = {}
-        self.button_labels = {}           # NEW: Track button labels to rename them dynamically
-        self.current_button_map = {i: f"Btn {i}" for i in range(24)} # NEW: Track active names for logging
+        self.button_name_vars = {}        # NEW: Track renamable text variables for buttons
+        self.current_button_map = {i: f"Btn {i}" for i in range(24)} 
         self.hat_vars = {}
         self.setting_widgets = [] 
         self.config_file = "config.json"
@@ -312,17 +312,21 @@ class OscWheelApp:
         grid_frame.pack(expand=True)
 
         for i in range(24):
-            col = (i // 12) * 2
+            col = (i // 12) * 3
             row = i % 12
             
-            # --- UPDATED: Track UI labels in a dict ---
-            lbl = tk.Label(grid_frame, text=f"Btn {i} ->")
-            lbl.grid(row=row, column=col, sticky="e", pady=2)
-            self.button_labels[i] = lbl 
+            # Text entry for the custom name
+            name_var = tk.StringVar(value=f"Btn {i}")
+            self.button_name_vars[i] = name_var
+            name_ent = tk.Entry(grid_frame, textvariable=name_var, width=16)
+            name_ent.grid(row=row, column=col, sticky="e", pady=2)
+            self.setting_widgets.append(name_ent)
+            
+            tk.Label(grid_frame, text="->").grid(row=row, column=col+1, padx=2)
             
             var = tk.StringVar(value=str(i))
             ent = tk.Entry(grid_frame, textvariable=var, width=5)
-            ent.grid(row=row, column=col+1, padx=(0, 20), pady=2)
+            ent.grid(row=row, column=col+2, padx=(0, 20), pady=2)
             self.button_vars[i] = var
             self.setting_widgets.append(ent)
 
@@ -520,20 +524,31 @@ class OscWheelApp:
             tk.Label(self.axes_frame, text="Selected device has no valid axes.", fg="gray").pack(pady=5)
             return
 
+        profile_data = self.profiles.get(self.current_profile_name.get(), {})
+        custom_axes_data = profile_data.get("axes", {})
+
         for axis_idx in range(num_axes):
             row_frame = tk.Frame(self.axes_frame)
             row_frame.pack(fill="x", pady=5)
             
-            tk.Label(row_frame, text=f"Axis {axis_idx}:", width=6, anchor="w").pack(side="left")
-            
             if axis_idx not in self.axis_config:
                 self.axis_config[axis_idx] = {
+                    'name_var': tk.StringVar(value=f"Axis {axis_idx}"),
                     'id_var': tk.StringVar(value=str(axis_idx)),
                     'inv_var': tk.BooleanVar(value=False),
                     'sens_var': tk.DoubleVar(value=1.0),
                     'dead_var': tk.DoubleVar(value=0.0)
                 }
             config = self.axis_config[axis_idx]
+            
+            saved_name = f"Axis {axis_idx}"
+            if str(axis_idx) in custom_axes_data:
+                saved_name = custom_axes_data[str(axis_idx)].get("custom_name", saved_name)
+            config['name_var'].set(saved_name)
+            
+            name_entry = tk.Entry(row_frame, textvariable=config['name_var'], width=15)
+            name_entry.pack(side="left")
+            self.setting_widgets.append(name_entry)
             
             tk.Label(row_frame, text="-> OSC ID:").pack(side="left")
             id_entry = tk.Entry(row_frame, textvariable=config['id_var'], width=4)
@@ -643,7 +658,7 @@ class OscWheelApp:
 
         content = [
                     ("Controller 2 OSC \n", "h1"),
-                    ("Version 2.2.1\n", "code"),
+                    ("Version 2.3.0\n", "code"),
                     ("\n C2O is a lightweight, GUI-driven Python application designed to seamlessly bridge the gap between physical hardware and digital environments. It reads real-time data from connected USB steering wheels, Bluetooth gamepads, and joysticks. Capturing everything from continuous analog axes (like pedals and throttles) to discrete button presses and D-pad movements.\n\n", ""),
                     ("The application translates and broadcasts these inputs over a local network using the Open Sound Control (OSC) protocol, ensuring low-latency communication without the need for heavy middleware.\n\n", ""),
                     ("C2O was developed as, and aims to be a versatile solution for mapping physical simulation hardware to Massive Loop.\n\n", ""),
@@ -689,6 +704,9 @@ class OscWheelApp:
                     ("• /ffb/friction [Float 0-100]: ", "bold"),
                     ("Adjust the static friction dynamically.\n", "code"),
                     ("\n\n", ""),
+                    
+                    ("Version 2.3.0 Update Log\n", "h2"),
+                    ("• Allowed dynamic renaming of buttons and axes directly from the GUI, saved per profile.\n", "bullet"),
 
                     ("Version 2.2.1 Update Log\n", "h2"),
                     ("• Added true button names for the devices buttons rather than the generic BTN it was prior.\n", "bullet"),
@@ -790,11 +808,13 @@ class OscWheelApp:
             "ffb_friction": self.ffb_friction_var.get(),
             "axes": {},
             "buttons": {},
-            "hats": {} # new
+            "button_names": {}, 
+            "hats": {}
         }
         
         for idx, config in self.axis_config.items():
             config_data["axes"][str(idx)] = {
+                "custom_name": config.get('name_var', tk.StringVar(value=f"Axis {idx}")).get(),
                 "osc_id": config['id_var'].get(),
                 "inverted": config['inv_var'].get(),
                 "sensitivity": config['sens_var'].get(),
@@ -803,6 +823,9 @@ class OscWheelApp:
             
         for idx, var in self.button_vars.items():
             config_data["buttons"][str(idx)] = var.get()
+            
+        for idx, var in self.button_name_vars.items():
+            config_data["button_names"][str(idx)] = var.get()
 
         self.profiles[self.current_profile_name.get()] = config_data
 
@@ -831,11 +854,13 @@ class OscWheelApp:
                 idx = int(idx_str)
                 if idx not in self.axis_config:
                     self.axis_config[idx] = {
+                        'name_var': tk.StringVar(value=f"Axis {idx}"),
                         'id_var': tk.StringVar(value=str(idx)),
                         'inv_var': tk.BooleanVar(value=False),
                         'sens_var': tk.DoubleVar(value=1.0),
                         'dead_var': tk.DoubleVar(value=0.0)
                     }
+                self.axis_config[idx]['name_var'].set(data.get("custom_name", f"Axis {idx}"))
                 self.axis_config[idx]['id_var'].set(data.get("osc_id", str(idx)))
                 self.axis_config[idx]['inv_var'].set(data.get("inverted", False))
                 self.axis_config[idx]['sens_var'].set(data.get("sensitivity", 1.0))
@@ -846,6 +871,12 @@ class OscWheelApp:
                 idx = int(idx_str)
                 if idx in self.button_vars:
                     self.button_vars[idx].set(value)
+
+        if "button_names" in config_data:
+            for idx_str, value in config_data["button_names"].items():
+                idx = int(idx_str)
+                if idx in self.button_name_vars:
+                    self.button_name_vars[idx].set(value)
 
         if "hats" in config_data:
             for idx_str, value in config_data["hats"].items():
@@ -861,30 +892,37 @@ class OscWheelApp:
         is_xbox = any(x in name_lower for x in ["xbox", "xinput"])
         is_g29 = any(x in name_lower for x in ["g29", "g920", "g923"])
         
+        # Read profile custom names to not overwrite them
+        profile_data = self.profiles.get(self.current_profile_name.get(), {})
+        custom_btn_names = profile_data.get("button_names", {})
+
         self.current_button_map.clear()
         
         for i in range(24):
-            btn_name = f"Btn {i}"
-            
-            if is_ps:
-                map_dict = {0: "Cross / A", 1: "Circle / B", 2: "Square / X", 3: "Triangle / Y", 4: "Share", 5: "Playstation Button", 6: "Options", 7: "L Thumbstick Button", 8: "R Thumbstick Button", 9: "L1", 10: "R1", 11: "D-pad UP", 12: "D-pad DOWN", 13:"D-pad LEFT", 14: "D-pad RIGHT", 15: "Pad"}
-                btn_name = map_dict.get(i, f"Btn {i}")
-            elif is_nintendo:
-                map_dict = {0: "B", 1: "A", 2: "Y", 3: "X", 4: "L", 5: "R", 6: "ZL", 7: "ZR", 8: "Minus", 9: "Plus", 10: "L3", 11: "R3", 12: "Home", 13: "Capture"}
-                btn_name = map_dict.get(i, f"Btn {i}")
-            elif is_g29:
-                map_dict = {0: "Cross", 1: "Square", 2: "Circle", 3: "Triangle", 4: "R-Paddle", 5: "L-Paddle", 6: "Options", 7: "Share", 8: "RSB", 9: "LSB", 10: "Center Logo Button", 11: "L3", 12: "Gear 1", 13: "Gear 2", 14: "Gear 3", 15: "Gear 4", 16: "Gear 5", 17: "Gear 6", 18: "Gear R", 19: "Plus", 20: "Minus", 21: "Dial R", 22: "Dial L", 23: "Enter"}
-                btn_name = map_dict.get(i, f"Btn {i}")
-            elif is_xbox or "controller" in name_lower or "gamepad" in name_lower:
-                # Default to XInput map for generics
-                map_dict = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB", 6: "Back", 7: "Start", 8: "LS", 9: "RS", 10: "Guide"}
-                btn_name = map_dict.get(i, f"Btn {i}")
+            # Only use auto-detection if the user hasn't saved a custom name
+            if str(i) in custom_btn_names and custom_btn_names[str(i)].strip():
+                btn_name = custom_btn_names[str(i)]
+            else:
+                if is_ps:
+                    map_dict = {0: "Cross / A", 1: "Circle / B", 2: "Square / X", 3: "Triangle / Y", 4: "Share", 5: "Playstation Button", 6: "Options", 7: "L Thumbstick Button", 8: "R Thumbstick Button", 9: "L1", 10: "R1", 11: "D-pad UP", 12: "D-pad DOWN", 13:"D-pad LEFT", 14: "D-pad RIGHT", 15: "Pad"}
+                    btn_name = map_dict.get(i, f"Btn {i}")
+                elif is_nintendo:
+                    map_dict = {0: "B", 1: "A", 2: "Y", 3: "X", 4: "L", 5: "R", 6: "ZL", 7: "ZR", 8: "Minus", 9: "Plus", 10: "L3", 11: "R3", 12: "Home", 13: "Capture"}
+                    btn_name = map_dict.get(i, f"Btn {i}")
+                elif is_g29:
+                    map_dict = {0: "Cross", 1: "Square", 2: "Circle", 3: "Triangle", 4: "R-Paddle", 5: "L-Paddle", 6: "Options", 7: "Share", 8: "RSB", 9: "LSB", 10: "Center Logo Button", 11: "L3", 12: "Gear 1", 13: "Gear 2", 14: "Gear 3", 15: "Gear 4", 16: "Gear 5", 17: "Gear 6", 18: "Gear R", 19: "Plus", 20: "Minus", 21: "Dial R", 22: "Dial L", 23: "Enter"}
+                    btn_name = map_dict.get(i, f"Btn {i}")
+                elif is_xbox or "controller" in name_lower or "gamepad" in name_lower:
+                    map_dict = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB", 6: "Back", 7: "Start", 8: "LS", 9: "RS", 10: "Guide"}
+                    btn_name = map_dict.get(i, f"Btn {i}")
+                else:
+                    btn_name = f"Btn {i}"
                 
             self.current_button_map[i] = btn_name
             
-            # Apply to GUI
-            if i in self.button_labels:
-                self.button_labels[i].config(text=f"{btn_name} ->")
+            # Apply to GUI text variables
+            if i in self.button_name_vars:
+                self.button_name_vars[i].set(btn_name)
 
     def refresh_devices(self):
         self._close_devices()
@@ -1066,6 +1104,7 @@ class OscWheelApp:
     def reset_mappings(self):
         if messagebox.askyesno("Confirm Reset", "Are you sure you want to reset all mappings and sensitivities to their defaults?"):
             for axis_idx, config in self.axis_config.items():
+                config['name_var'].set(f"Axis {axis_idx}")
                 config['id_var'].set(str(axis_idx))
                 config['inv_var'].set(False)
                 config['sens_var'].set(1.0)
@@ -1076,6 +1115,19 @@ class OscWheelApp:
 
             for i, var in self.hat_vars.items():
                 var.set(str(i))
+                
+            # Clear stored custom names in the active profile so update_button_labels uses defaults
+            current_profile = self.current_profile_name.get()
+            if current_profile in self.profiles:
+                if "button_names" in self.profiles[current_profile]:
+                    self.profiles[current_profile]["button_names"] = {}
+                if "axes" in self.profiles[current_profile]:
+                    for _, ax_data in self.profiles[current_profile]["axes"].items():
+                        if "custom_name" in ax_data:
+                            del ax_data["custom_name"]
+            
+            name = sdl2.SDL_JoystickName(self.joystick).decode('utf-8', errors='ignore') if self.joystick else "Unknown"
+            self._update_button_labels(name)
 
     def get_axis_value(self, index, raw_value):
         if index in self.axis_config:
@@ -1159,12 +1211,12 @@ class OscWheelApp:
         for i in sorted(self.prev_axes.keys()):
             val = self.get_axis_value(i, self.prev_axes[i])
             mapped_i = self.get_axis_id(i)
-            self.log_area.insert(tk.END, f"Axis {i} (OSC ID {mapped_i}):   {val:.3f}\n")
+            axis_name = self.axis_config[i]['name_var'].get() if i in self.axis_config else f"Axis {i}"
+            self.log_area.insert(tk.END, f"{axis_name} (OSC ID {mapped_i}):   {val:.3f}\n")
             
         for i in sorted(self.prev_buttons.keys()):
             mapped_i = self.get_button_id(i)
-            # Fetch mapped name for terminal display
-            btn_name = self.current_button_map.get(i, f"Btn {i}")
+            btn_name = self.button_name_vars[i].get() if i in self.button_name_vars else f"Btn {i}"
             self.log_area.insert(tk.END, f"{btn_name} (OSC ID {mapped_i}): {self.prev_buttons[i]}\n")
             
         for i in sorted(self.prev_hats.keys()):
