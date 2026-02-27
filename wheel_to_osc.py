@@ -853,7 +853,6 @@ class OscWheelApp:
                 if idx in self.hat_vars:
                     self.hat_vars[idx].set(value)
 
-    # --- NEW: Dynamic Label Map Generator ---
     def _update_button_labels(self, name):
         name_lower = name.lower()
         
@@ -868,13 +867,13 @@ class OscWheelApp:
             btn_name = f"Btn {i}"
             
             if is_ps:
-                map_dict = {0: "Square", 1: "Cross", 2: "Circle", 3: "Triangle", 4: "L1", 5: "R1", 6: "L2", 7: "R2", 8: "Share", 9: "Options", 10: "L3", 11: "R3", 12: "PS", 13: "Pad"}
+                map_dict = {0: "Cross / A", 1: "Circle / B", 2: "Square / X", 3: "Triangle / Y", 4: "Share", 5: "Playstation Button", 6: "Options", 7: "L Thumbstick Button", 8: "R Thumbstick Button", 9: "L1", 10: "R1", 11: "D-pad UP", 12: "D-pad DOWN", 13:"D-pad LEFT", 14: "D-pad RIGHT", 15: "Pad"}
                 btn_name = map_dict.get(i, f"Btn {i}")
             elif is_nintendo:
-                map_dict = {0: "B", 1: "A", 2: "Y", 3: "X", 4: "L", 5: "R", 6: "ZL", 7: "ZR", 8: "-", 9: "+", 10: "L3", 11: "R3", 12: "Home", 13: "Capture"}
+                map_dict = {0: "B", 1: "A", 2: "Y", 3: "X", 4: "L", 5: "R", 6: "ZL", 7: "ZR", 8: "Minus", 9: "Plus", 10: "L3", 11: "R3", 12: "Home", 13: "Capture"}
                 btn_name = map_dict.get(i, f"Btn {i}")
             elif is_g29:
-                map_dict = {0: "Cross/A", 1: "Square/X", 2: "Circle/B", 3: "Triangle/Y", 4: "R-Paddle", 5: "L-Paddle", 6: "R2/RT", 7: "L2/LT", 8: "Share", 9: "Options", 10: "R3", 11: "L3", 19: "+", 20: "-", 21: "Dial R", 22: "Dial L", 23: "Enter"}
+                map_dict = {0: "Cross", 1: "Square", 2: "Circle", 3: "Triangle", 4: "R-Paddle", 5: "L-Paddle", 6: "Options", 7: "Share", 8: "RSB", 9: "LSB", 10: "Center Logo Button", 11: "L3", 12: "Gear 1", 13: "Gear 2", 14: "Gear 3", 15: "Gear 4", 16: "Gear 5", 17: "Gear 6", 18: "Gear R", 19: "Plus", 20: "Minus", 21: "Dial R", 22: "Dial L", 23: "Enter"}
                 btn_name = map_dict.get(i, f"Btn {i}")
             elif is_xbox or "controller" in name_lower or "gamepad" in name_lower:
                 # Default to XInput map for generics
