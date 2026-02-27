@@ -685,7 +685,7 @@ class OscWheelApp:
 
                     ("Version 2.2.0 Update Log\n", "h2"),
                     ("• Added Ability to remap axis binding\n", "bullet"),
-                    ("\n", "bullet"),
+                    ("• Added ability to remap D-pad bindings for steering wheels (not needed for normal controllers)\n", "bullet"),
 
                     ("Version 2.1.0 Update Log\n", "h2"),
                     ("• Added Profiles: Save unique mappings for different wheels or gamepads.\n", "bullet"),
