@@ -55,6 +55,7 @@ class OscWheelApp:
         # Configuration Variables
         self.axis_config = {}
         self.button_vars = {}
+        self.hat_vars = {}
         self.setting_widgets = [] 
         self.config_file = "config.json"
         
@@ -317,6 +318,22 @@ class OscWheelApp:
             ent.grid(row=row, column=col+1, padx=(0, 20), pady=2)
             self.button_vars[i] = var
             self.setting_widgets.append(ent)
+
+        # --- NEW HAT MAPPING FRAME ---
+        hats_frame = tk.LabelFrame(self.scrollable_frame, text="D-Pad / Hat Mapping (Hardware ID -> OSC ID)", padx=10, pady=10)
+        hats_frame.pack(fill="x", padx=10, pady=(0, 5))
+        
+        hat_grid = tk.Frame(hats_frame)
+        hat_grid.pack(expand=True)
+        
+        for i in range(4): # Supports up to 4 D-Pads/Hats
+            tk.Label(hat_grid, text=f"Hat {i} ->").grid(row=0, column=i*2, sticky="e", pady=2)
+            var = tk.StringVar(value=str(i))
+            ent = tk.Entry(hat_grid, textvariable=var, width=5)
+            ent.grid(row=0, column=i*2+1, padx=(0, 20), pady=2)
+            self.hat_vars[i] = var
+            self.setting_widgets.append(ent)
+        # -----------------------------
 
         reset_frame = tk.Frame(self.scrollable_frame)
         reset_frame.pack(fill="x", padx=10, pady=20)
@@ -767,7 +784,8 @@ class OscWheelApp:
             "ffb_damper": self.ffb_damper_var.get(),
             "ffb_friction": self.ffb_friction_var.get(),
             "axes": {},
-            "buttons": {}
+            "buttons": {},
+            "hats": {} # new
         }
         
         for idx, config in self.axis_config.items():
@@ -823,6 +841,12 @@ class OscWheelApp:
                 idx = int(idx_str)
                 if idx in self.button_vars:
                     self.button_vars[idx].set(value)
+
+        if "hats" in config_data:
+            for idx_str, value in config_data["hats"].items():
+                idx = int(idx_str)
+                if idx in self.hat_vars:
+                    self.hat_vars[idx].set(value)
 
 
     def refresh_devices(self):
@@ -1009,6 +1033,9 @@ class OscWheelApp:
             for i, var in self.button_vars.items():
                 var.set(str(i))
 
+            for i, var in self.hat_vars.items():
+                var.set(str(i))
+
     def get_axis_value(self, index, raw_value):
         if index in self.axis_config:
             config = self.axis_config[index]
@@ -1045,6 +1072,14 @@ class OscWheelApp:
         if raw_index in self.button_vars:
             try:
                 return int(self.button_vars[raw_index].get())
+            except ValueError:
+                pass 
+        return raw_index
+    
+    def get_hat_id(self, raw_index):
+        if raw_index in self.hat_vars:
+            try:
+                return int(self.hat_vars[raw_index].get())
             except ValueError:
                 pass 
         return raw_index
@@ -1090,7 +1125,8 @@ class OscWheelApp:
             self.log_area.insert(tk.END, f"Btn {i} (OSC ID {mapped_i}): {self.prev_buttons[i]}\n")
             
         for i in sorted(self.prev_hats.keys()):
-            self.log_area.insert(tk.END, f"Hat {i} (D-Pad): {self.prev_hats[i]}\n")
+                    mapped_i = self.get_hat_id(i)
+                    self.log_area.insert(tk.END, f"Hat {i} (OSC ID {mapped_i}): {self.prev_hats[i]}\n")
             
         self.log_area.config(state='disabled')
 
@@ -1309,7 +1345,8 @@ class OscWheelApp:
             hat_tuple = self.sdl_hat_to_tuple(hat_bitmask)
             
             if self.prev_hats.get(i) != hat_tuple:
-                msg_args = ["hat", i, hat_tuple[0], hat_tuple[1]]
+                mapped_id = self.get_hat_id(i)
+                msg_args = ["hat", mapped_id, hat_tuple[0], hat_tuple[1]]
                 self.client.send_message(self.osc_address, msg_args)
                 
                 if self.output_mode.get() == "scroll":
