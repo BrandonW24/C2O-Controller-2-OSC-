@@ -298,7 +298,7 @@ class OscWheelApp:
         self.preview_frame.pack(fill="x", padx=10, pady=5)
         tk.Label(self.preview_frame, text="Waiting for device...", fg="gray").pack(pady=5)
 
-        self.axes_frame = tk.LabelFrame(self.scrollable_frame, text="Axis Configuration", padx=10, pady=10)
+        self.axes_frame = tk.LabelFrame(self.scrollable_frame, text="Axis Configuration (Hardware ID -> OSC ID)", padx=10, pady=10)
         self.axes_frame.pack(fill="x", padx=10, pady=5)
         tk.Label(self.axes_frame, text="Please connect and select a controller.", fg="gray").pack(pady=5)
 
@@ -504,11 +504,17 @@ class OscWheelApp:
             
             if axis_idx not in self.axis_config:
                 self.axis_config[axis_idx] = {
+                    'id_var': tk.StringVar(value=str(axis_idx)),
                     'inv_var': tk.BooleanVar(value=False),
                     'sens_var': tk.DoubleVar(value=1.0),
                     'dead_var': tk.DoubleVar(value=0.0)
                 }
             config = self.axis_config[axis_idx]
+            
+            tk.Label(row_frame, text="-> OSC ID:").pack(side="left")
+            id_entry = tk.Entry(row_frame, textvariable=config['id_var'], width=4)
+            id_entry.pack(side="left", padx=(2, 10))
+            self.setting_widgets.append(id_entry)
             
             chk = tk.Checkbutton(row_frame, text="Invert", variable=config['inv_var'])
             chk.pack(side="left", padx=2)
@@ -613,7 +619,7 @@ class OscWheelApp:
 
         content = [
                     ("Controller 2 OSC \n", "h1"),
-                    ("Version 2.1.0\n", "code"),
+                    ("Version 2.2.0\n", "code"),
                     ("\n C2O is a lightweight, GUI-driven Python application designed to seamlessly bridge the gap between physical hardware and digital environments. It reads real-time data from connected USB steering wheels, Bluetooth gamepads, and joysticks. Capturing everything from continuous analog axes (like pedals and throttles) to discrete button presses and D-pad movements.\n\n", ""),
                     ("The application translates and broadcasts these inputs over a local network using the Open Sound Control (OSC) protocol, ensuring low-latency communication without the need for heavy middleware.\n\n", ""),
                     ("C2O was developed as, and aims to be a versatile solution for mapping physical simulation hardware to Massive Loop.\n\n", ""),
@@ -659,6 +665,10 @@ class OscWheelApp:
                     ("• /ffb/friction [Float 0-100]: ", "bold"),
                     ("Adjust the static friction dynamically.\n", "code"),
                     ("\n\n", ""),
+
+                    ("Version 2.2.0 Update Log\n", "h2"),
+                    ("• Added Ability to remap axis binding\n", "bullet"),
+                    ("\n", "bullet"),
 
                     ("Version 2.1.0 Update Log\n", "h2"),
                     ("• Added Profiles: Save unique mappings for different wheels or gamepads.\n", "bullet"),
@@ -762,6 +772,7 @@ class OscWheelApp:
         
         for idx, config in self.axis_config.items():
             config_data["axes"][str(idx)] = {
+                "osc_id": config['id_var'].get(),
                 "inverted": config['inv_var'].get(),
                 "sensitivity": config['sens_var'].get(),
                 "deadzone": config['dead_var'].get()
@@ -797,10 +808,12 @@ class OscWheelApp:
                 idx = int(idx_str)
                 if idx not in self.axis_config:
                     self.axis_config[idx] = {
+                        'id_var': tk.StringVar(value=str(idx)),
                         'inv_var': tk.BooleanVar(value=False),
                         'sens_var': tk.DoubleVar(value=1.0),
                         'dead_var': tk.DoubleVar(value=0.0)
                     }
+                self.axis_config[idx]['id_var'].set(data.get("osc_id", str(idx)))
                 self.axis_config[idx]['inv_var'].set(data.get("inverted", False))
                 self.axis_config[idx]['sens_var'].set(data.get("sensitivity", 1.0))
                 self.axis_config[idx]['dead_var'].set(data.get("deadzone", 0.0))
@@ -988,6 +1001,7 @@ class OscWheelApp:
     def reset_mappings(self):
         if messagebox.askyesno("Confirm Reset", "Are you sure you want to reset all mappings and sensitivities to their defaults?"):
             for axis_idx, config in self.axis_config.items():
+                config['id_var'].set(str(axis_idx))
                 config['inv_var'].set(False)
                 config['sens_var'].set(1.0)
                 config['dead_var'].set(0.0)
@@ -1018,6 +1032,14 @@ class OscWheelApp:
             val = max(-1.0, min(1.0, val))
             return round(val, 3)
         return raw_value
+        
+    def get_axis_id(self, raw_index):
+        if raw_index in self.axis_config:
+            try:
+                return int(self.axis_config[raw_index]['id_var'].get())
+            except ValueError:
+                pass
+        return raw_index
 
     def get_button_id(self, raw_index):
         if raw_index in self.button_vars:
@@ -1060,7 +1082,8 @@ class OscWheelApp:
         
         for i in sorted(self.prev_axes.keys()):
             val = self.get_axis_value(i, self.prev_axes[i])
-            self.log_area.insert(tk.END, f"Axis {i}:   {val:.3f}\n")
+            mapped_i = self.get_axis_id(i)
+            self.log_area.insert(tk.END, f"Axis {i} (OSC ID {mapped_i}):   {val:.3f}\n")
             
         for i in sorted(self.prev_buttons.keys()):
             mapped_i = self.get_button_id(i)
@@ -1258,7 +1281,8 @@ class OscWheelApp:
                 self.prev_axes[i] = raw_axis_val
                 
                 final_val = self.get_axis_value(i, raw_axis_val)
-                msg_args = ["axis", i, final_val]
+                mapped_axis_id = self.get_axis_id(i)
+                msg_args = ["axis", mapped_axis_id, final_val]
                 
                 self.client.send_message(self.osc_address, msg_args)
                 if self.output_mode.get() == "scroll":
