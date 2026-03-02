@@ -17,6 +17,8 @@ import sdl2.ext
 from PIL import Image, ImageTk
 import pystray
 
+import sv_ttk
+
 # Attempt to import keyboard for global key polling
 try:
     import keyboard
@@ -206,52 +208,57 @@ class OscWheelApp:
         settings_frame = tk.LabelFrame(self.main_tab, text="OSC Targeting & Listening", padx=10, pady=10)
         settings_frame.pack(fill="x", padx=10, pady=10)
 
-        tk.Label(settings_frame, text="Target IP:").grid(row=0, column=0, sticky="e", pady=2)
-        self.ip_entry = tk.Entry(settings_frame, width=20)
+        ttk.Label(settings_frame, text="Target IP:").grid(row=0, column=0, sticky="e", pady=2)
+        self.ip_entry = ttk.Entry(settings_frame, width=20)
         self.ip_entry.insert(0, "127.0.0.1")
         self.ip_entry.grid(row=0, column=1, pady=2, padx=5, sticky="w")
         self.setting_widgets.append(self.ip_entry)
 
-        tk.Label(settings_frame, text="Target Port (Send):").grid(row=1, column=0, sticky="e", pady=2)
-        self.port_entry = tk.Entry(settings_frame, width=10)
+        ttk.Label(settings_frame, text="Target Port (Send):").grid(row=1, column=0, sticky="e", pady=2)
+        self.port_entry = ttk.Entry(settings_frame, width=10)
         self.port_entry.insert(0, "4041")
         self.port_entry.grid(row=1, column=1, pady=2, padx=5, sticky="w")
         self.setting_widgets.append(self.port_entry)
 
         tk.Label(settings_frame, text="Listen Port (FFB In):").grid(row=2, column=0, sticky="e", pady=2)
-        self.listen_port_entry = tk.Entry(settings_frame, width=10)
+        self.listen_port_entry = ttk.Entry(settings_frame, width=10)
         self.listen_port_entry.insert(0, "4042")
         self.listen_port_entry.grid(row=2, column=1, pady=2, padx=5, sticky="w")
         self.setting_widgets.append(self.listen_port_entry)
 
         tk.Label(settings_frame, text="Base OSC Address:").grid(row=3, column=0, sticky="e", pady=2)
-        self.addr_entry = tk.Entry(settings_frame, width=25)
+        self.addr_entry = ttk.Entry(settings_frame, width=25)
         self.addr_entry.insert(0, "/wheel/input")
         self.addr_entry.grid(row=3, column=1, pady=2, padx=5, sticky="w")
         self.setting_widgets.append(self.addr_entry)
 
-        control_frame = tk.Frame(self.main_tab)
+        control_frame = ttk.Frame(self.main_tab)
         control_frame.pack(fill="x", padx=10, pady=5)
 
-        self.start_btn = tk.Button(control_frame, text="Start Streaming", bg="#4CAF50", fg="white", font=("Arial", 10, "bold"), command=self.toggle_stream)
+        self.start_btn = ttk.Button(
+            control_frame, 
+            text="Start Streaming", 
+            style="Accent.TButton",  # Use the theme's accent style instead of bg/fg/font
+            command=self.toggle_stream
+        )
         self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 5))
 
-        self.clear_btn = tk.Button(control_frame, text="Clear Log", command=self.clear_log)
+        self.clear_btn = ttk.Button(control_frame, text="Clear Log", command=self.clear_log)
         self.clear_btn.pack(side="right", expand=True, fill="x", padx=(5, 0))
 
-        output_options_frame = tk.Frame(self.main_tab)
+        output_options_frame = ttk.Frame(self.main_tab)
         output_options_frame.pack(fill="x", padx=10, pady=(5, 0))
         
-        tk.Label(output_options_frame, text="Output Style:").pack(side="left")
+        ttk.Label(output_options_frame, text="Output Style:").pack(side="left")
         
         self.output_mode = tk.StringVar(value="scroll")
-        tk.Radiobutton(output_options_frame, text="Scrolling Log", variable=self.output_mode, value="scroll", command=self.on_mode_change).pack(side="left", padx=5)
-        tk.Radiobutton(output_options_frame, text="In-Place Dashboard", variable=self.output_mode, value="inplace", command=self.on_mode_change).pack(side="left", padx=5)
+        ttk.Radiobutton(output_options_frame, text="Scrolling Log", variable=self.output_mode, value="scroll", command=self.on_mode_change).pack(side="left", padx=5)
+        ttk.Radiobutton(output_options_frame, text="In-Place Dashboard", variable=self.output_mode, value="inplace", command=self.on_mode_change).pack(side="left", padx=5)
 
         self.status_icon_label = tk.Label(output_options_frame, image=self.ui_icon_off)
         self.status_icon_label.pack(side="right", padx=20)
 
-        self.log_area = scrolledtext.ScrolledText(self.main_tab, height=25, state='disabled', bg="#1e1e1e", fg="#00ff00", font=("Consolas", 9))
+        self.log_area = scrolledtext.ScrolledText(self.main_tab, height=25, state='disabled', bg="#1e1e1e", fg="#00ffff", font=("Consolas", 9))
         self.log_area.pack(fill="both", expand=True, padx=10, pady=(5, 10))
 
     def _build_settings_tab(self):
@@ -277,11 +284,11 @@ class OscWheelApp:
         self.profile_combo.bind("<<ComboboxSelected>>", self.on_profile_selected)
         self.setting_widgets.append(self.profile_combo)
 
-        self.new_prof_btn = tk.Button(profile_frame, text="New Profile", command=self.new_profile)
+        self.new_prof_btn = ttk.Button(profile_frame, text="New Profile", command=self.new_profile)
         self.new_prof_btn.pack(side="left", padx=2)
         self.setting_widgets.append(self.new_prof_btn)
 
-        self.del_prof_btn = tk.Button(profile_frame, text="Delete", command=self.delete_profile)
+        self.del_prof_btn = ttk.Button(profile_frame, text="Delete", command=self.delete_profile)
         self.del_prof_btn.pack(side="left", padx=2)
         self.setting_widgets.append(self.del_prof_btn)
 
@@ -294,37 +301,58 @@ class OscWheelApp:
         self.device_dropdown.bind("<<ComboboxSelected>>", self.on_device_selected)
         self.setting_widgets.append(self.device_dropdown)
 
-        self.refresh_btn = tk.Button(device_frame, text="Refresh Devices", command=self.refresh_devices)
+        self.refresh_btn = ttk.Button(device_frame, text="Refresh Devices", command=self.refresh_devices)
         self.refresh_btn.pack(side="right")
         self.setting_widgets.append(self.refresh_btn)
 
         # --- FORCE FEEDBACK FRAME ---
         self.ffb_frame = tk.LabelFrame(self.scrollable_frame, text="Hardware Force Feedback Parameters", padx=10, pady=10)
         
-        # Spring
-        spring_container = tk.Frame(self.ffb_frame)
+# Spring
+        spring_container = ttk.Frame(self.ffb_frame)
         spring_container.pack(fill="x", pady=2)
-        tk.Label(spring_container, text="Centering Spring:", width=15, anchor="w").pack(side="left")
+        ttk.Label(spring_container, text="Centering Spring:", width=15, anchor="w").pack(side="left")
+        
         self.ffb_spring_var = tk.DoubleVar(value=50.0) 
-        self.ffb_spring_scale = tk.Scale(spring_container, variable=self.ffb_spring_var, from_=0, to=100, orient="horizontal", command=self.update_ffb)
+        spring_lbl = ttk.Label(spring_container, text=f"{self.ffb_spring_var.get():.0f}", width=4)
+        spring_lbl.pack(side="left")
+        
+        self.ffb_spring_scale = ttk.Scale(
+            spring_container, variable=self.ffb_spring_var, from_=0, to=100, orient="horizontal", 
+            command=lambda v, lbl=spring_lbl: (lbl.config(text=f"{float(v):.0f}"), self.update_ffb())
+        )
         self.ffb_spring_scale.pack(side="left", fill="x", expand=True, padx=5)
         self.setting_widgets.append(self.ffb_spring_scale)
 
         # Damper
-        damper_container = tk.Frame(self.ffb_frame)
+        damper_container = ttk.Frame(self.ffb_frame)
         damper_container.pack(fill="x", pady=2)
-        tk.Label(damper_container, text="Damper (Weight):", width=15, anchor="w").pack(side="left")
+        ttk.Label(damper_container, text="Damper (Weight):", width=15, anchor="w").pack(side="left")
+        
         self.ffb_damper_var = tk.DoubleVar(value=20.0) 
-        self.ffb_damper_scale = tk.Scale(damper_container, variable=self.ffb_damper_var, from_=0, to=100, orient="horizontal", command=self.update_ffb)
+        damper_lbl = ttk.Label(damper_container, text=f"{self.ffb_damper_var.get():.0f}", width=4)
+        damper_lbl.pack(side="left")
+        
+        self.ffb_damper_scale = ttk.Scale(
+            damper_container, variable=self.ffb_damper_var, from_=0, to=100, orient="horizontal", 
+            command=lambda v, lbl=damper_lbl: (lbl.config(text=f"{float(v):.0f}"), self.update_ffb())
+        )
         self.ffb_damper_scale.pack(side="left", fill="x", expand=True, padx=5)
         self.setting_widgets.append(self.ffb_damper_scale)
 
         # Friction
-        friction_container = tk.Frame(self.ffb_frame)
+        friction_container = ttk.Frame(self.ffb_frame)
         friction_container.pack(fill="x", pady=2)
-        tk.Label(friction_container, text="Static Friction:", width=15, anchor="w").pack(side="left")
+        ttk.Label(friction_container, text="Static Friction:", width=15, anchor="w").pack(side="left")
+        
         self.ffb_friction_var = tk.DoubleVar(value=10.0) 
-        self.ffb_friction_scale = tk.Scale(friction_container, variable=self.ffb_friction_var, from_=0, to=100, orient="horizontal", command=self.update_ffb)
+        friction_lbl = ttk.Label(friction_container, text=f"{self.ffb_friction_var.get():.0f}", width=4)
+        friction_lbl.pack(side="left")
+        
+        self.ffb_friction_scale = ttk.Scale(
+            friction_container, variable=self.ffb_friction_var, from_=0, to=100, orient="horizontal", 
+            command=lambda v, lbl=friction_lbl: (lbl.config(text=f"{float(v):.0f}"), self.update_ffb())
+        )
         self.ffb_friction_scale.pack(side="left", fill="x", expand=True, padx=5)
         self.setting_widgets.append(self.ffb_friction_scale)
 
@@ -339,7 +367,7 @@ class OscWheelApp:
         buttons_frame = tk.LabelFrame(self.scrollable_frame, text="Button Mapping", padx=10, pady=10)
         buttons_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
 
-        grid_frame = tk.Frame(buttons_frame)
+        grid_frame = ttk.Frame(buttons_frame)
         grid_frame.pack(expand=True)
 
         for i in range(24):
@@ -349,14 +377,14 @@ class OscWheelApp:
             # Text entry for the custom name
             name_var = tk.StringVar(value=f"Btn {i}")
             self.button_name_vars[i] = name_var
-            name_ent = tk.Entry(grid_frame, textvariable=name_var, width=16)
+            name_ent = ttk.Entry(grid_frame, textvariable=name_var, width=16)
             name_ent.grid(row=row, column=col, sticky="e", pady=2)
             self.setting_widgets.append(name_ent)
             
             tk.Label(grid_frame, text="-> ID:").grid(row=row, column=col+1, padx=2)
             
             var = tk.StringVar(value=str(i))
-            ent = tk.Entry(grid_frame, textvariable=var, width=5)
+            ent = ttk.Entry(grid_frame, textvariable=var, width=5)
             ent.grid(row=row, column=col+2, padx=(0, 5), pady=2)
             self.button_vars[i] = var
             self.setting_widgets.append(ent)
@@ -364,7 +392,7 @@ class OscWheelApp:
             tk.Label(grid_frame, text="Addr:").grid(row=row, column=col+3, padx=2)
             
             addr_var = tk.StringVar(value="")
-            addr_ent = tk.Entry(grid_frame, textvariable=addr_var, width=12)
+            addr_ent = ttk.Entry(grid_frame, textvariable=addr_var, width=12)
             addr_ent.grid(row=row, column=col+4, padx=(0, 20), pady=2)
             self.button_addr_vars[i] = addr_var
             self.setting_widgets.append(addr_ent)
@@ -373,20 +401,20 @@ class OscWheelApp:
         hats_frame = tk.LabelFrame(self.scrollable_frame, text="D-Pad / Hat Mapping", padx=10, pady=10)
         hats_frame.pack(fill="x", padx=10, pady=(0, 5))
         
-        hat_grid = tk.Frame(hats_frame)
+        hat_grid = ttk.Frame(hats_frame)
         hat_grid.pack(expand=True)
         
         for i in range(4): # Supports up to 4 D-Pads/Hats
             tk.Label(hat_grid, text=f"Hat {i} -> ID:").grid(row=i, column=0, sticky="e", pady=2)
             var = tk.StringVar(value=str(i))
-            ent = tk.Entry(hat_grid, textvariable=var, width=5)
+            ent = ttk.Entry(hat_grid, textvariable=var, width=5)
             ent.grid(row=i, column=1, padx=(0, 5), pady=2)
             self.hat_vars[i] = var
             self.setting_widgets.append(ent)
             
             tk.Label(hat_grid, text="Addr:").grid(row=i, column=2, sticky="e", pady=2)
             addr_var = tk.StringVar(value="")
-            addr_ent = tk.Entry(hat_grid, textvariable=addr_var, width=12)
+            addr_ent = ttk.Entry(hat_grid, textvariable=addr_var, width=12)
             addr_ent.grid(row=i, column=3, padx=(0, 20), pady=2)
             self.hat_addr_vars[i] = addr_var
             self.setting_widgets.append(addr_ent)
@@ -398,7 +426,7 @@ class OscWheelApp:
         keyboard_frame.pack(fill="x", padx=10, pady=(0, 5))
         
         # Adding the Tooltip Label
-        help_lbl = tk.Label(keyboard_frame, text="[?] Hover for help", fg="#4CAF50", cursor="question_arrow")
+        help_lbl = tk.Label(keyboard_frame, text="[?] Hover for help", fg="#4C98AF", cursor="question_arrow")
         help_lbl.pack(anchor="e", pady=(0, 5))
         
         help_text = (
@@ -411,7 +439,7 @@ class OscWheelApp:
         ToolTip(help_lbl, help_text)
 
         if KEYBOARD_AVAILABLE:
-            k_grid = tk.Frame(keyboard_frame)
+            k_grid = ttk.Frame(keyboard_frame)
             k_grid.pack(expand=True)
             for i in range(12): # 12 slots for mapped keys
                 row = i // 2
@@ -419,17 +447,17 @@ class OscWheelApp:
                 
                 tk.Label(k_grid, text=f"Slot {i+1} Key:").grid(row=row, column=col, sticky="e", pady=2)
                 k_var = tk.StringVar()
-                k_ent = tk.Entry(k_grid, textvariable=k_var, width=5)
+                k_ent = ttk.Entry(k_grid, textvariable=k_var, width=5)
                 k_ent.grid(row=row, column=col+1, padx=2, pady=2)
                 
                 tk.Label(k_grid, text="-> Addr:").grid(row=row, column=col+2, sticky="e", pady=2)
                 a_var = tk.StringVar()
-                a_ent = tk.Entry(k_grid, textvariable=a_var, width=12)
+                a_ent = ttk.Entry(k_grid, textvariable=a_var, width=12)
                 a_ent.grid(row=row, column=col+3, padx=2, pady=2)
                 
                 tk.Label(k_grid, text="ID:").grid(row=row, column=col+4, sticky="e", pady=2)
                 i_var = tk.StringVar()
-                i_ent = tk.Entry(k_grid, textvariable=i_var, width=5)
+                i_ent = ttk.Entry(k_grid, textvariable=i_var, width=5)
                 i_ent.grid(row=row, column=col+5, padx=(2, 20), pady=2)
                 
                 self.keyboard_vars[i] = {'key': k_var, 'addr': a_var, 'id': i_var}
@@ -437,14 +465,14 @@ class OscWheelApp:
         else:
             tk.Label(keyboard_frame, text="Keyboard module not installed. Run 'pip install keyboard' in your environment to enable.", fg="#e74c3c").pack(pady=5)
 
-        reset_frame = tk.Frame(self.scrollable_frame)
+        reset_frame = ttk.Frame(self.scrollable_frame)
         reset_frame.pack(fill="x", padx=10, pady=20)
 
-        self.reset_btn = tk.Button(reset_frame, text="Reset Mappings", command=self.reset_mappings)
+        self.reset_btn = ttk.Button(reset_frame, text="Reset Mappings", command=self.reset_mappings)
         self.reset_btn.pack(side="right", padx=(5, 0))
         self.setting_widgets.append(self.reset_btn)
 
-        self.save_btn = tk.Button(reset_frame, text="Save Settings", command=self.save_config)
+        self.save_btn = ttk.Button(reset_frame, text="Save Settings", command=self.save_config)
         self.save_btn.pack(side="right")
         self.setting_widgets.append(self.save_btn)
 
@@ -480,10 +508,10 @@ class OscWheelApp:
             return
 
         if self.is_wheel:
-            container = tk.Frame(self.preview_frame)
+            container = ttk.Frame(self.preview_frame)
             container.pack(expand=True, pady=10)
 
-            wheel_frame = tk.Frame(container)
+            wheel_frame = ttk.Frame(container)
             wheel_frame.pack(side="left", padx=20)
             tk.Label(wheel_frame, text="Axis 0 (Steering)").pack(pady=(0, 5))
             
@@ -516,11 +544,11 @@ class OscWheelApp:
             )
 
             if num_axes > 1:
-                pedals_frame = tk.Frame(container)
+                pedals_frame = ttk.Frame(container)
                 pedals_frame.pack(side="left", padx=20)
                 
                 for i in range(1, num_axes):
-                    p_frame = tk.Frame(pedals_frame)
+                    p_frame = ttk.Frame(pedals_frame)
                     p_frame.pack(side="left", padx=10)
                     tk.Label(p_frame, text=f"Axis {i}").pack(pady=(0, 5))
                     
@@ -535,17 +563,17 @@ class OscWheelApp:
                     self.pedal_canvases.append(p_canvas)
                     self.pedal_rect_ids.append(rect_id)
         else:
-            container = tk.Frame(self.preview_frame)
+            container = ttk.Frame(self.preview_frame)
             container.pack(expand=True, pady=5)
             
             grid_axes = [i for i in range(num_axes) if i not in (4, 5)]
             trigger_axes = [i for i in range(num_axes) if i in (4, 5)]
             
-            grid_frame = tk.Frame(container)
+            grid_frame = ttk.Frame(container)
             grid_frame.pack(side="left")
             
             if trigger_axes:
-                trigger_frame = tk.Frame(container)
+                trigger_frame = ttk.Frame(container)
                 trigger_frame.pack(side="left", padx=(20 if grid_axes else 0))
             
             num_pairs = math.ceil(len(grid_axes) / 2)
@@ -554,7 +582,7 @@ class OscWheelApp:
                 col = i % 3
                 row = i // 3
                 
-                pair_frame = tk.Frame(grid_frame)
+                pair_frame = ttk.Frame(grid_frame)
                 pair_frame.grid(row=row, column=col, padx=15, pady=5)
                 
                 ax_x = grid_axes[i*2]
@@ -586,7 +614,7 @@ class OscWheelApp:
                 self.preview_dots.append(red_dot)
                 
             for ax in trigger_axes:
-                t_frame = tk.Frame(trigger_frame)
+                t_frame = ttk.Frame(trigger_frame)
                 t_frame.pack(side="left", padx=10)
                 tk.Label(t_frame, text=f"Axis {ax}\n(Trigger)").pack(pady=(0, 5))
                 
@@ -619,7 +647,7 @@ class OscWheelApp:
         custom_axes_data = profile_data.get("axes", {})
 
         for axis_idx in range(num_axes):
-            row_frame = tk.Frame(self.axes_frame)
+            row_frame = ttk.Frame(self.axes_frame)
             row_frame.pack(fill="x", pady=5)
             
             if axis_idx not in self.axis_config:
@@ -638,31 +666,52 @@ class OscWheelApp:
                 saved_name = custom_axes_data[str(axis_idx)].get("custom_name", saved_name)
             config['name_var'].set(saved_name)
             
-            name_entry = tk.Entry(row_frame, textvariable=config['name_var'], width=15)
+            name_entry = ttk.Entry(row_frame, textvariable=config['name_var'], width=15)
             name_entry.pack(side="left")
             self.setting_widgets.append(name_entry)
             
             tk.Label(row_frame, text="-> ID:").pack(side="left")
-            id_entry = tk.Entry(row_frame, textvariable=config['id_var'], width=4)
+            id_entry = ttk.Entry(row_frame, textvariable=config['id_var'], width=4)
             id_entry.pack(side="left", padx=(2, 5))
             self.setting_widgets.append(id_entry)
             
             tk.Label(row_frame, text="Addr:").pack(side="left")
-            addr_entry = tk.Entry(row_frame, textvariable=config['addr_var'], width=12)
+            addr_entry = ttk.Entry(row_frame, textvariable=config['addr_var'], width=12)
             addr_entry.pack(side="left", padx=(2, 5))
             self.setting_widgets.append(addr_entry)
             
-            chk = tk.Checkbutton(row_frame, text="Invert", variable=config['inv_var'])
+            chk = ttk.Checkbutton(row_frame, text="Invert", variable=config['inv_var'])
             chk.pack(side="left", padx=2)
             self.setting_widgets.append(chk)
             
+            # --- Deadzone Scale & Label ---
             tk.Label(row_frame, text="Deadzone:").pack(side="left", padx=(5, 0))
-            dead_scale = tk.Scale(row_frame, variable=config['dead_var'], from_=0.0, to=0.5, resolution=0.01, orient="horizontal", length=80)
+
+            # 1. Create a label to hold the number, initialized with the current variable value
+            dead_val_lbl = tk.Label(row_frame, text=f"{config['dead_var'].get():.2f}", width=4)
+            dead_val_lbl.pack(side="left")
+
+            # 2. Pass a lambda to the command argument to update the label text, formatted to 2 decimal places
+            dead_scale = ttk.Scale(
+                row_frame, variable=config['dead_var'], from_=0.0, to=0.5, orient="horizontal", length=80,
+                command=lambda v, lbl=dead_val_lbl: lbl.config(text=f"{float(v):.2f}")
+            )
             dead_scale.pack(side="left", padx=2)
             self.setting_widgets.append(dead_scale)
-            
+
+
+            # --- Sensitivity Scale & Label ---
             tk.Label(row_frame, text="Sens:").pack(side="left", padx=(5, 0))
-            sens_scale = tk.Scale(row_frame, variable=config['sens_var'], from_=0.1, to=5.0, resolution=0.1, orient="horizontal")
+
+            # 1. Create the label
+            sens_val_lbl = tk.Label(row_frame, text=f"{config['sens_var'].get():.1f}", width=4)
+            sens_val_lbl.pack(side="left")
+
+            # 2. Update to 1 decimal place dynamically
+            sens_scale = ttk.Scale(
+                row_frame, variable=config['sens_var'], from_=0.1, to=5.0, orient="horizontal",
+                command=lambda v, lbl=sens_val_lbl: lbl.config(text=f"{float(v):.1f}")
+            )
             sens_scale.pack(side="left", fill="x", expand=True, padx=2)
             self.setting_widgets.append(sens_scale)
             
@@ -755,7 +804,7 @@ class OscWheelApp:
 
         content = [
                     ("Controller 2 OSC \n", "h1"),
-                    ("Version 2.4.0\n", "code"),
+                    ("Version 2.4.1\n", "code"),
                     ("\n C2O is a lightweight, GUI-driven Python application designed to seamlessly bridge the gap between physical hardware and digital environments. It reads real-time data from connected USB steering wheels, Bluetooth gamepads, joysticks, and keyboards. Capturing everything from continuous analog axes (like pedals and throttles) to discrete button presses and D-pad movements.\n\n", ""),
                     ("The application translates and broadcasts these inputs over a local network using the Open Sound Control (OSC) protocol, ensuring low-latency communication without the need for heavy middleware.\n\n", ""),
                     ("C2O was developed as, and aims to be a versatile solution for mapping physical simulation hardware to Massive Loop.\n\n", ""),
@@ -805,6 +854,10 @@ class OscWheelApp:
                     ("• /ffb/friction [Float 0-100]: ", "bold"),
                     ("Adjust the static friction dynamically.\n", "code"),
                     ("\n\n", ""),
+
+                    ("Version 2.4.1 Update Log\n", "h2"),
+                    ("• Updated GUI to the Azure TTK theme, thank you to rdbende! \n", "bullet"),
+                    ("• Source : https://github.com/rdbende/Azure-ttk-theme\n", "bullet"),
 
                     ("Version 2.4.0 Update Log\n", "h2"),
                     ("• Added customizable OSC address routing per axis, button, and hat.\n", "bullet"),
@@ -1211,8 +1264,10 @@ class OscWheelApp:
         try:
             with open(self.config_file, 'w') as f:
                 json.dump(full_data, f, indent=4)
-            self.save_btn.config(text="Saved!", bg="#4CAF50", fg="white")
-            self.root.after(1500, lambda: self.save_btn.config(text="Save Settings", bg="SystemButtonFace", fg="black"))
+            # Use the theme's Accent style for the "Saved" state
+            self.save_btn.config(text="Saved!", style="Accent.TButton")
+            # Revert back to the standard button style after 1.5 seconds
+            self.root.after(1500, lambda: self.save_btn.config(text="Save Settings", style="TButton"))
         except Exception as e:
             print(f"Error saving config: {e}")
 
@@ -1441,7 +1496,7 @@ class OscWheelApp:
             return
 
         self.is_running = True
-        self.start_btn.config(text="Stop Streaming", bg="#f44336")
+        self.start_btn.config(text="Stop Streaming", style="TButton") # Reverts to a standard button
         
         self.setting_widgets = [w for w in self.setting_widgets if w.winfo_exists()]
         for widget in self.setting_widgets:
@@ -1483,7 +1538,7 @@ class OscWheelApp:
                 pass
             self.server = None
             
-        self.start_btn.config(text="Start Streaming", bg="#4CAF50")
+        self.start_btn.config(text="Start Streaming", style="Accent.TButton")
 
         if self.ui_icon_off:
             self.status_icon_label.config(image=self.ui_icon_off)
@@ -1680,5 +1735,15 @@ if __name__ == "__main__":
         pass 
     
     root = tk.Tk()
+    
+    # Safely resolve the path for PyInstaller's temp folder
+    theme_path = resource_path("azure.tcl")
+    # Tcl requires forward slashes for paths, even on Windows
+    theme_path_tcl = theme_path.replace("\\", "/") 
+    
+    # Apply the Azure theme
+    root.tk.call("source", theme_path_tcl)
+    root.tk.call("set_theme", "light")
+    
     app = OscWheelApp(root)
     root.mainloop()
