@@ -132,6 +132,9 @@ class OscWheelApp:
         self.icon_on_tk = None
         self.tray_icon = None
 
+        # Dictionary to store UI widget references for real-time highlighting
+        self.ui_indicators = {'axes': {}, 'buttons': {}, 'hats': {}, 'keys': {}}
+
         self._load_icons()
 
         sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK | sdl2.SDL_INIT_HAPTIC)
@@ -143,6 +146,19 @@ class OscWheelApp:
         self._preview_loop()
         
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def _flash_widget(self, input_type, index):
+        """Temporarily highlights an entry widget's text to indicate hardware input."""
+        # Only flash if the user is actively looking at the Input Settings tab
+        if self.notebook.select() != self.settings_tab._w:
+            return
+            
+        widget = self.ui_indicators.get(input_type, {}).get(index)
+        if widget and widget.winfo_exists():
+            # Change text to cyan
+            widget.config(foreground="#00ffea") 
+            # Revert back to the theme's default text color after 200ms
+            self.root.after(500, lambda w=widget: w.config(foreground="") if w.winfo_exists() else None)
 
     def _load_icons(self):
             try:
@@ -292,6 +308,20 @@ class OscWheelApp:
         self.del_prof_btn.pack(side="left", padx=2)
         self.setting_widgets.append(self.del_prof_btn)
 
+        # --- Theme Switch ---
+        theme_frame = ttk.Frame(profile_frame)
+        theme_frame.pack(side="right", padx=10)
+        
+        self.is_dark_mode = tk.BooleanVar(value=False)
+        self.theme_switch = ttk.Checkbutton(
+            theme_frame, 
+            text="Dark Mode", 
+            style="Switch.TCheckbutton", 
+            variable=self.is_dark_mode,
+            command=lambda: self.root.tk.call("set_theme", "dark" if self.is_dark_mode.get() else "light")
+        )
+        self.theme_switch.pack(side="right")
+
         device_frame = tk.LabelFrame(self.scrollable_frame, text="Input Device", padx=10, pady=10)
         device_frame.pack(fill="x", padx=10, pady=(10, 5))
 
@@ -308,7 +338,7 @@ class OscWheelApp:
         # --- FORCE FEEDBACK FRAME ---
         self.ffb_frame = tk.LabelFrame(self.scrollable_frame, text="Hardware Force Feedback Parameters", padx=10, pady=10)
         
-# Spring
+        # Spring
         spring_container = ttk.Frame(self.ffb_frame)
         spring_container.pack(fill="x", pady=2)
         ttk.Label(spring_container, text="Centering Spring:", width=15, anchor="w").pack(side="left")
@@ -364,8 +394,22 @@ class OscWheelApp:
         self.axes_frame.pack(fill="x", padx=10, pady=5)
         tk.Label(self.axes_frame, text="Please connect and select a controller.", fg="gray").pack(pady=5)
 
+        #------------- BUTTON MAPPING ----------------------
+
         buttons_frame = tk.LabelFrame(self.scrollable_frame, text="Button Mapping", padx=10, pady=10)
         buttons_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+
+        #--Button Mapping Tooltip Label--
+        help_lbl = tk.Label(buttons_frame, text="[?] Hover for help", fg="#4C98AF", cursor="question_arrow")
+        help_lbl.pack(anchor="e", pady=(0, 5))
+        
+        help_text = (
+            "About mapping buttons :\n\n"
+            "• Button Name : Based on auto-detect, your button map will default to the predetermined button names given by your device's driver. \n You can customize each buttons name if you wish by clicking and typing in the appropriate field. \n\n"
+             "• ID / OSC ID : You can customize what OSC ID you want your button to broadcast its message to. This is optional, as C2O sets it up by default in numerical order.\n\n"
+            "• Addr : The target OSC Address (e.g., '/avatar/parameters/Jump').\n"
+        )
+        ToolTip(help_lbl, help_text)
 
         grid_frame = ttk.Frame(buttons_frame)
         grid_frame.pack(expand=True)
@@ -380,7 +424,9 @@ class OscWheelApp:
             name_ent = ttk.Entry(grid_frame, textvariable=name_var, width=16)
             name_ent.grid(row=row, column=col, sticky="e", pady=2)
             self.setting_widgets.append(name_ent)
-            
+            self.ui_indicators['buttons'][i] = name_ent
+            self.ui_prev_state = {'axes': {}, 'buttons': {}, 'hats': {}, 'keys': {}}
+
             tk.Label(grid_frame, text="-> ID:").grid(row=row, column=col+1, padx=2)
             
             var = tk.StringVar(value=str(i))
@@ -411,6 +457,7 @@ class OscWheelApp:
             ent.grid(row=i, column=1, padx=(0, 5), pady=2)
             self.hat_vars[i] = var
             self.setting_widgets.append(ent)
+            self.ui_indicators['hats'][i] = ent
             
             tk.Label(hat_grid, text="Addr:").grid(row=i, column=2, sticky="e", pady=2)
             addr_var = tk.StringVar(value="")
@@ -425,14 +472,14 @@ class OscWheelApp:
         keyboard_frame = tk.LabelFrame(self.scrollable_frame, text="Global Keyboard Mapping (Key -> OSC Address / ID)", padx=10, pady=10)
         keyboard_frame.pack(fill="x", padx=10, pady=(0, 5))
         
-        # Adding the Tooltip Label
+        #--Tooltip Label--
         help_lbl = tk.Label(keyboard_frame, text="[?] Hover for help", fg="#4C98AF", cursor="question_arrow")
         help_lbl.pack(anchor="e", pady=(0, 5))
         
         help_text = (
-            "How to bind keys:\n\n"
+            "How to bind/map keys:\n\n"
             "• Key : The keyboard key you want to press (e.g., 'w', 'space', 'shift', 'ctrl+c').\n\n"
-             "• Key Combinations : You can even type key combinations into that field and they'll work too! (e.g., 'shift+1', 'ctrl+c', 'F3+4', 'alt+F4'...).\n\n"
+             "• Key Combinations : You can even type key combinations into that field and they'll work too! (e.g., 'shift+1', 'ctrl+c', 'F3+4', 'w+d+c', and so on.).\n\n"
             "• Addr : The target OSC Address (e.g., '/avatar/parameters/Jump').\n\n"
             "• ID : An optional numeric ID to pass as an argument."
         )
@@ -449,6 +496,7 @@ class OscWheelApp:
                 k_var = tk.StringVar()
                 k_ent = ttk.Entry(k_grid, textvariable=k_var, width=5)
                 k_ent.grid(row=row, column=col+1, padx=2, pady=2)
+                self.ui_indicators['keys'][i] = k_ent
                 
                 tk.Label(k_grid, text="-> Addr:").grid(row=row, column=col+2, sticky="e", pady=2)
                 a_var = tk.StringVar()
@@ -530,17 +578,17 @@ class OscWheelApp:
             self.wheel_canvas.create_oval(
                 self.wheel_center - 4, self.wheel_center - 4,
                 self.wheel_center + 4, self.wheel_center + 4,
-                fill="#00ff4c"
+                fill="#0084ff"
             )
             
             self.wheel_spoke_id = self.wheel_canvas.create_line(
                 self.wheel_center, self.wheel_center,
                 self.wheel_center, self.wheel_center - self.wheel_radius,
-                fill="#00ff4c", width=3
+                fill="#0084ff", width=3
             )
             
             self.wheel_text_id = self.wheel_canvas.create_text(
-                self.wheel_center, self.wheel_center + 30, text="0°", fill="white", font=("Arial", 10, "bold")
+                self.wheel_center, self.wheel_center + 30, text="0°", fill="white", font=("Segoe UI", 10, "bold")
             )
 
             if num_axes > 1:
@@ -558,7 +606,7 @@ class OscWheelApp:
                     p_canvas.pack()
                     
                     p_canvas.create_rectangle(2, 2, p_width-2, p_height-2, outline="#555555", width=2)
-                    rect_id = p_canvas.create_rectangle(4, p_height-4, p_width-4, p_height-4, fill="#00ff4c", outline="")
+                    rect_id = p_canvas.create_rectangle(4, p_height-4, p_width-4, p_height-4, fill="#0084ff", outline="")
                     
                     self.pedal_canvases.append(p_canvas)
                     self.pedal_rect_ids.append(rect_id)
@@ -626,7 +674,7 @@ class OscWheelApp:
                 p_canvas.pack()
                 
                 p_canvas.create_rectangle(2, 2, p_width-2, p_height-2, outline="#555555", width=2)
-                rect_id = p_canvas.create_rectangle(4, p_height-4, p_width-4, p_height-4, fill="#00ff4c", outline="")
+                rect_id = p_canvas.create_rectangle(4, p_height-4, p_width-4, p_height-4, fill="#0084ff", outline="")
                 
                 self.pedal_canvases.append(p_canvas)
                 self.pedal_rect_ids.append(rect_id)
@@ -669,6 +717,7 @@ class OscWheelApp:
             name_entry = ttk.Entry(row_frame, textvariable=config['name_var'], width=15)
             name_entry.pack(side="left")
             self.setting_widgets.append(name_entry)
+            self.ui_indicators['axes'][axis_idx] = name_entry
             
             tk.Label(row_frame, text="-> ID:").pack(side="left")
             id_entry = ttk.Entry(row_frame, textvariable=config['id_var'], width=4)
@@ -718,6 +767,51 @@ class OscWheelApp:
         self._bind_mousewheel(self.axes_frame)
 
     def _preview_loop(self):
+    # --- ALWAYS-ON KEYBOARD FLASHING ---
+        if KEYBOARD_AVAILABLE and self.notebook.select() == self.settings_tab._w:
+            for i, k_vars in self.keyboard_vars.items():
+                k = k_vars['key'].get().strip()
+                if k:
+                    try:
+                        val = 1 if keyboard.is_pressed(k) else 0
+                    except ValueError:
+                        val = 0
+                    if val == 1 and self.ui_prev_state['keys'].get(i, 0) == 0:
+                        self._flash_widget('keys', i)
+                    self.ui_prev_state['keys'][i] = val
+
+        if self.joystick:
+            if not self.is_running:
+                sdl2.SDL_JoystickUpdate()
+            
+            # --- ALWAYS-ON CONTROLLER FLASHING ---
+            if self.notebook.select() == self.settings_tab._w:
+                num_axes = sdl2.SDL_JoystickNumAxes(self.joystick)
+                num_buttons = sdl2.SDL_JoystickNumButtons(self.joystick)
+                num_hats = sdl2.SDL_JoystickNumHats(self.joystick)
+
+                # 1. Check Axes
+                for i in range(num_axes):
+                    val = sdl2.SDL_JoystickGetAxis(self.joystick, i) / 32767.0
+                    # Only flash if moved significantly (ignores slight stick drift)
+                    if abs(self.ui_prev_state['axes'].get(i, val) - val) > 0.05:
+                        self._flash_widget('axes', i)
+                    self.ui_prev_state['axes'][i] = val
+                    
+                # 2. Check Buttons
+                for i in range(num_buttons):
+                    val = sdl2.SDL_JoystickGetButton(self.joystick, i)
+                    if val == 1 and self.ui_prev_state['buttons'].get(i, 0) == 0:
+                        self._flash_widget('buttons', i)
+                    self.ui_prev_state['buttons'][i] = val
+                    
+                # 3. Check Hats (D-Pad)
+                for i in range(num_hats):
+                    val = sdl2.SDL_JoystickGetHat(self.joystick, i)
+                    if val != 0 and self.ui_prev_state['hats'].get(i, 0) == 0:
+                        self._flash_widget('hats', i)
+                    self.ui_prev_state['hats'][i] = val
+
         if self.joystick:
             if not self.is_running:
                 sdl2.SDL_JoystickUpdate()
@@ -855,9 +949,12 @@ class OscWheelApp:
                     ("Adjust the static friction dynamically.\n", "code"),
                     ("\n\n", ""),
 
-                    ("Version 2.4.1 Update Log\n", "h2"),
+                    ("Version 2.4.1 QOL Update\n", "h2"),
                     ("• Updated GUI to the Azure TTK theme, thank you to rdbende! \n", "bullet"),
                     ("• Source : https://github.com/rdbende/Azure-ttk-theme\n", "bullet"),
+                    ("• Upgraded Performance to the input polling by utilizing multi-threading : Moved poll_inputs() into its own dedicated thread. \n", "bullet"),
+                    ("• Added an input previewer for buttons, keyboard presses, axis, and D-pads when\n", "bullet"),
+                    ("• Added a dark / light mode switch in the settings tab.\n", "bullet"),
 
                     ("Version 2.4.0 Update Log\n", "h2"),
                     ("• Added customizable OSC address routing per axis, button, and hat.\n", "bullet"),
@@ -1522,10 +1619,16 @@ class OscWheelApp:
         self.prev_hats.clear()
         self.prev_keys.clear()
 
-        self.poll_inputs()
+        # Start the dedicated hardware polling thread
+        self.polling_thread = threading.Thread(target=self._polling_loop, daemon=True)
+        self.polling_thread.start()
 
     def stop_streaming(self):
         self.is_running = False
+
+        if hasattr(self, 'polling_thread') and self.polling_thread.is_alive():
+            self.polling_thread.join(timeout=1.0)
+
         if self.update_job:
             self.root.after_cancel(self.update_job)
             self.update_job = None
@@ -1618,6 +1721,17 @@ class OscWheelApp:
         elif hat_val & sdl2.SDL_HAT_LEFT:
             x = -1
         return (x, y)
+    
+    def _polling_loop(self):
+        """Dedicated thread for strictly gathering and broadcasting hardware data."""
+        while self.is_running:
+            self.poll_inputs()
+            # 0.01s sleep gives us a rock-solid ~100Hz polling rate without maxing out the CPU
+            time.sleep(0.01) 
+            
+            # Safely trigger UI updates back on the main thread if needed
+            if self.output_mode.get() == "inplace":
+                self.root.after_idle(self.redraw_in_place)
 
     def poll_inputs(self):
         if not self.is_running:
@@ -1634,6 +1748,10 @@ class OscWheelApp:
             for i in range(num_axes):
                 raw_axis_val = round(sdl2.SDL_JoystickGetAxis(self.joystick, i) / 32767.0, 3)
                 if self.prev_axes.get(i) != raw_axis_val:
+                    # Only flash if the axis moved significantly (ignores micro-jitters)
+                    if abs(self.prev_axes.get(i, 0) - raw_axis_val) > 0.05:
+                        self.root.after(0, self._flash_widget, 'axes', i)
+
                     self.prev_axes[i] = raw_axis_val
                     
                     final_val = self.get_axis_value(i, raw_axis_val)
@@ -1650,6 +1768,9 @@ class OscWheelApp:
             for i in range(num_buttons):
                 raw_btn_val = sdl2.SDL_JoystickGetButton(self.joystick, i)
                 if self.prev_buttons.get(i) != raw_btn_val:
+                    # Only flash on button PRESS (not release)
+                    if raw_btn_val == 1:
+                        self.root.after(0, self._flash_widget, 'buttons', i)
                     self.prev_buttons[i] = raw_btn_val
                     
                     mapped_id = self.get_button_id(i)
@@ -1667,6 +1788,9 @@ class OscWheelApp:
                 hat_tuple = self.sdl_hat_to_tuple(hat_bitmask)
                 
                 if self.prev_hats.get(i) != hat_tuple:
+                    # Only flash if a direction is pressed
+                    if hat_tuple != (0, 0):
+                        self.root.after(0, self._flash_widget, 'hats', i)
                     mapped_id = self.get_hat_id(i)
                     addr = self.hat_addr_vars[i].get().strip() or self.osc_address
                     msg_args = ["hat", mapped_id, hat_tuple[0], hat_tuple[1]]
@@ -1689,6 +1813,9 @@ class OscWheelApp:
                         
                     val = 1 if is_pressed else 0
                     if self.prev_keys.get(i) != val:
+                        # Only flash on key PRESS (not release)
+                        if val == 1:
+                            self.root.after(0, self._flash_widget, 'keys', i)
                         self.prev_keys[i] = val
                         
                         addr = k_vars['addr'].get().strip() or self.osc_address
@@ -1707,10 +1834,10 @@ class OscWheelApp:
                             
                         state_changed = True
 
-        if state_changed and self.output_mode.get() == "inplace":
-            self.redraw_in_place()
+    ##    if state_changed and self.output_mode.get() == "inplace":
+    ##        self.redraw_in_place()
 
-        self.update_job = self.root.after(10, self.poll_inputs)
+     ##   self.update_job = self.root.after(10, self.poll_inputs)
 
     def on_closing(self, *args):
         self.root.after(0, self._shutdown)
