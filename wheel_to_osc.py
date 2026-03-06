@@ -1,6 +1,6 @@
 import time
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, simpledialog
+from tkinter import scrolledtext, messagebox, simpledialog
 from pythonosc import udp_client, osc_server, dispatcher
 import threading
 import os
@@ -16,8 +16,6 @@ import sdl2.ext
 # Imports for system tray and image handling
 from PIL import Image, ImageTk
 import pystray
-
-import sv_ttk
 
 # Attempt to import keyboard for global key polling
 try:
@@ -63,14 +61,15 @@ class OscWheelApp:
     def __init__(self, root):
         self.root = root
         self.root.title("CTRL 2 OSC")
-        # Widened window to accommodate custom address fields comfortably
-        self.root.geometry("850x780")
+        self.root.geometry("880x780")
         
         # State variables
         self.is_running = False
         self.client = None
-        self.joystick = None
-        self.haptic = None
+        
+        # Hardware pools
+        self.joystick = None 
+        self.active_joysticks = [] 
         
         # FFB Effect IDs and Structures
         self.spring_id = None
@@ -84,6 +83,7 @@ class OscWheelApp:
         self.prev_buttons = {}
         self.prev_hats = {} 
         self.prev_keys = {}
+        self.axis_ema = {} 
         self.update_job = None
         self.devices_map = {} 
         
@@ -91,11 +91,11 @@ class OscWheelApp:
         self.axis_config = {}
         self.button_vars = {}
         self.button_name_vars = {}        
-        self.button_addr_vars = {}        # Custom addresses for buttons
+        self.button_addr_vars = {}        
         self.current_button_map = {i: f"Btn {i}" for i in range(24)} 
         self.hat_vars = {}
-        self.hat_addr_vars = {}           # Custom addresses for hats
-        self.keyboard_vars = {}           # Keyboard mapping variables
+        self.hat_addr_vars = {}           
+        self.keyboard_vars = {}           
         self.setting_widgets = [] 
         self.config_file = "config.json"
         
@@ -105,35 +105,24 @@ class OscWheelApp:
         
         # UI State Variables
         self.is_wheel = False
+        self.ui_indicators = {'axes': {}, 'buttons': {}, 'hats': {}, 'keys': {}}
         
-        # Preview Canvas Variables (For Wheel/Pedals)
-        self.wheel_canvas = None
-        self.wheel_spoke_id = None
-        self.wheel_text_id = None
-        self.pedal_canvases = []
-        self.pedal_rect_ids = []
-
-        # 2 way OSC
-        self.osc_server_thread = None
-        self.server = None
+        # Multi-Device Previews
+        self.device_previews = []
         
-        # Preview Canvas Variables (For Standard Gamepads)
-        self.preview_canvases = []
-        self.preview_dots = []
-        self.std_grid_axes = []      
-        self.std_trigger_axes = []   
         self.canvas_size = 140
         self.center = self.canvas_size // 2
         self.radius = 60
+        
+        # 2 way OSC
+        self.osc_server_thread = None
+        self.server = None
         
         self.img_off = None
         self.img_on = None
         self.icon_off_tk = None
         self.icon_on_tk = None
         self.tray_icon = None
-
-        # Dictionary to store UI widget references for real-time highlighting
-        self.ui_indicators = {'axes': {}, 'buttons': {}, 'hats': {}, 'keys': {}}
 
         self._load_icons()
 
@@ -143,22 +132,117 @@ class OscWheelApp:
         self.load_config()
         self.refresh_devices() 
         self._setup_tray_icon()
-        self._preview_loop()
+        
+        # Start the continuous UI preview rendering loop
+        self._preview_update_loop()
         
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.bind_all("<MouseWheel>", self._on_mousewheel)
 
-    def _flash_widget(self, input_type, index):
-        """Temporarily highlights an entry widget's text to indicate hardware input."""
-        # Only flash if the user is actively looking at the Input Settings tab
-        if self.notebook.select() != self.settings_tab._w:
-            return
+    def _preview_update_loop(self):
+        if hasattr(self, 'device_previews') and self.active_joysticks:
+            if not self.is_running:
+                sdl2.SDL_JoystickUpdate()
             
-        widget = self.ui_indicators.get(input_type, {}).get(index)
-        if widget and widget.winfo_exists():
-            # Change text to cyan
-            widget.config(foreground="#00ffea") 
-            # Revert back to the theme's default text color after 200ms
-            self.root.after(500, lambda w=widget: w.config(foreground="") if w.winfo_exists() else None)
+            for idx, d in enumerate(self.active_joysticks):
+                if idx >= len(self.device_previews): break
+                joy = d['joy']
+                ax_off = d['ax_off']
+                p_dict = self.device_previews[idx]
+                
+                num_axes = sdl2.SDL_JoystickNumAxes(joy)
+                
+                if p_dict['is_wheel']:
+                    if num_axes > 0 and p_dict['wheel_canvas'] and p_dict['wheel_spoke_id']:
+                        raw_0 = sdl2.SDL_JoystickGetAxis(joy, 0) / 32767.0
+                        val_0 = self.get_axis_value(ax_off + 0, raw_0)
+                        
+                        current_deg = val_0 * 450.0
+                        angle = math.radians(current_deg - 90)
+                        
+                        end_x = self.center + self.radius * math.cos(angle)
+                        end_y = self.center + self.radius * math.sin(angle)
+                        
+                        p_dict['wheel_canvas'].coords(p_dict['wheel_spoke_id'], self.center, self.center, end_x, end_y)
+                        p_dict['wheel_canvas'].itemconfig(p_dict['wheel_text_id'], text=f"{int(current_deg)}°")
+                    
+                    for i in range(1, num_axes):
+                        pidx = i - 1
+                        if pidx < len(p_dict['pedal_canvases']):
+                            raw_val = sdl2.SDL_JoystickGetAxis(joy, i) / 32767.0
+                            val = self.get_axis_value(ax_off + i, raw_val)
+                            
+                            pct = (val + 1.0) / 2.0
+                            
+                            p_height = 140
+                            y2 = p_height - 4 
+                            y1 = y2 - (pct * (p_height - 8)) 
+                            
+                            p_dict['pedal_canvases'][pidx].coords(p_dict['pedal_rect_ids'][pidx], 4, y1, 30-4, y2)
+                else:
+                    for i, (ax_x, ax_y) in enumerate(p_dict['std_grid_axes']):
+                        if i >= len(p_dict['preview_canvases']):
+                            break
+                            
+                        x_val, y_val = 0.0, 0.0
+                        
+                        if ax_x < num_axes:
+                            raw_x = sdl2.SDL_JoystickGetAxis(joy, ax_x) / 32767.0
+                            x_val = self.get_axis_value(ax_off + ax_x, raw_x)
+                        if ax_y is not None and ax_y < num_axes:
+                            raw_y = sdl2.SDL_JoystickGetAxis(joy, ax_y) / 32767.0
+                            y_val = self.get_axis_value(ax_off + ax_y, raw_y)
+                            
+                        draw_x = self.center + (x_val * self.radius)
+                        draw_y = self.center + (y_val * self.radius)
+                        
+                        dot_r = 6
+                        p_dict['preview_canvases'][i].coords(p_dict['preview_dots'][i], draw_x - dot_r, draw_y - dot_r, draw_x + dot_r, draw_y + dot_r)
+                    
+                    for i, ax in enumerate(p_dict['std_trigger_axes']):
+                        if i >= len(p_dict['pedal_canvases']):
+                            break
+                            
+                        raw_val = sdl2.SDL_JoystickGetAxis(joy, ax) / 32767.0
+                        val = self.get_axis_value(ax_off + ax, raw_val)
+                        
+                        pct = (val + 1.0) / 2.0
+                        
+                        p_height = 140
+                        y2 = p_height - 4 
+                        y1 = y2 - (pct * (p_height - 8)) 
+                        
+                        p_dict['pedal_canvases'][i].coords(p_dict['pedal_rect_ids'][i], 4, y1, 30-4, y2)
+
+        self.root.after(20, self._preview_update_loop)
+
+    def _update_preview_labels(self, *args):
+        for p_dict in getattr(self, 'device_previews', []):
+            for info in p_dict['preview_labels']:
+                lbl = info['label']
+                if not lbl.winfo_exists():
+                    continue
+                
+                axes = info['axes']
+                
+                def get_name(idx):
+                    if idx in self.axis_config:
+                        val = self.axis_config[idx]['name_var'].get().strip()
+                        if val: return val
+                    return f"Axis {idx}"
+                    
+                if info['type'] == 'wheel':
+                    lbl.config(text=f"{get_name(axes[0])}\n(Steering)")
+                elif info['type'] == 'single':
+                    lbl.config(text=get_name(axes[0]))
+                elif info['type'] == 'pair':
+                    ax_x, ax_y = axes[0], axes[1]
+                    if ax_y is not None:
+                        lbl.config(text=f"{get_name(ax_x)} & {get_name(ax_y)}")
+                    else:
+                        lbl.config(text=get_name(ax_x))
+                elif info['type'] == 'trigger':
+                    lbl.config(text=f"{get_name(axes[0])}\n(Trigger)")
 
     def _load_icons(self):
             try:
@@ -204,72 +288,115 @@ class OscWheelApp:
         self.root.after(0, lambda: [self.root.deiconify(), self.root.lift()])
 
     def _build_ui(self):
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True)
+        self.notebook_frame = tk.Frame(self.root)
+        self.notebook_frame.pack(fill="both", expand=True)
 
-        self.main_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.main_tab, text="Output Settings")
+        self.tab_buttons_frame = tk.Frame(self.notebook_frame, bg="#d9d9d9", bd=1, relief="raised")
+        self.tab_buttons_frame.pack(fill="x")
 
-        self.settings_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.settings_tab, text="Input Settings")
+        self.tab_content_frame = tk.Frame(self.notebook_frame)
+        self.tab_content_frame.pack(fill="both", expand=True)
 
-        self.help_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.help_tab, text="About")
+        self.main_tab = tk.Frame(self.tab_content_frame)
+        self.settings_tab = tk.Frame(self.tab_content_frame)
+        self.help_tab = tk.Frame(self.tab_content_frame)
+
+        self.tabs = {
+            "Output Settings": self.main_tab,
+            "Input Settings": self.settings_tab,
+            "About": self.help_tab
+        }
+
+        self.tab_buttons = {}
+        for text, frame in self.tabs.items():
+            frame.grid(row=0, column=0, sticky="nsew")
+            btn = tk.Button(self.tab_buttons_frame, text=text, relief="raised", padx=10, pady=2,
+                            command=lambda f=frame, t=text: self.select_tab(f, t))
+            btn.pack(side="left")
+            self.tab_buttons[text] = btn
+
+        self.tab_content_frame.grid_rowconfigure(0, weight=1)
+        self.tab_content_frame.grid_columnconfigure(0, weight=1)
+
+        self.select_tab(self.main_tab, "Output Settings")
 
         self._build_main_tab()
         self._build_settings_tab()
         self._build_help_tab()
 
+    def select_tab(self, frame, text):
+        frame.tkraise()
+        self.current_tab = frame
+        for t, btn in self.tab_buttons.items():
+            if t == text:
+                btn.config(relief="sunken", bg="#c0c0c0")
+            else:
+                btn.config(relief="raised", bg="#e0e0e0")
+
     def _build_main_tab(self):
-        settings_frame = tk.LabelFrame(self.main_tab, text="OSC Targeting & Listening", padx=10, pady=10)
+        settings_frame = tk.LabelFrame(
+            self.main_tab, 
+            text="OSC Targeting & Listening", 
+            padx=10, pady=10,
+            font=("Segoe UI", 10, "bold"), 
+            fg="#0052cc", 
+            bd=1, relief="solid" 
+        )
         settings_frame.pack(fill="x", padx=10, pady=10)
 
-        ttk.Label(settings_frame, text="Target IP:").grid(row=0, column=0, sticky="e", pady=2)
-        self.ip_entry = ttk.Entry(settings_frame, width=20)
+        settings_frame.columnconfigure(1, weight=1)
+
+        tk.Label(settings_frame, text="Target IP:").grid(row=0, column=0, sticky="w", pady=2)
+        self.ip_entry = tk.Entry(settings_frame, width=20)
         self.ip_entry.insert(0, "127.0.0.1")
         self.ip_entry.grid(row=0, column=1, pady=2, padx=5, sticky="w")
         self.setting_widgets.append(self.ip_entry)
 
-        ttk.Label(settings_frame, text="Target Port (Send):").grid(row=1, column=0, sticky="e", pady=2)
-        self.port_entry = ttk.Entry(settings_frame, width=10)
+        tk.Label(settings_frame, text="Target Port (Send):").grid(row=1, column=0, sticky="w", pady=2)
+        self.port_entry = tk.Entry(settings_frame, width=10)
         self.port_entry.insert(0, "4041")
         self.port_entry.grid(row=1, column=1, pady=2, padx=5, sticky="w")
         self.setting_widgets.append(self.port_entry)
 
-        tk.Label(settings_frame, text="Listen Port (FFB In):").grid(row=2, column=0, sticky="e", pady=2)
-        self.listen_port_entry = ttk.Entry(settings_frame, width=10)
+        tk.Label(settings_frame, text="Listen Port (FFB In):").grid(row=2, column=0, sticky="w", pady=2)
+        self.listen_port_entry = tk.Entry(settings_frame, width=10)
         self.listen_port_entry.insert(0, "4042")
         self.listen_port_entry.grid(row=2, column=1, pady=2, padx=5, sticky="w")
         self.setting_widgets.append(self.listen_port_entry)
 
-        tk.Label(settings_frame, text="Base OSC Address:").grid(row=3, column=0, sticky="e", pady=2)
-        self.addr_entry = ttk.Entry(settings_frame, width=25)
+        tk.Label(settings_frame, text="Base OSC Address:").grid(row=3, column=0, sticky="w", pady=2)
+        self.addr_entry = tk.Entry(settings_frame, width=25)
         self.addr_entry.insert(0, "/wheel/input")
         self.addr_entry.grid(row=3, column=1, pady=2, padx=5, sticky="w")
         self.setting_widgets.append(self.addr_entry)
 
-        control_frame = ttk.Frame(self.main_tab)
+        control_frame = tk.Frame(self.main_tab)
         control_frame.pack(fill="x", padx=10, pady=5)
 
-        self.start_btn = ttk.Button(
+        self.start_btn = tk.Button(
             control_frame, 
             text="Start Streaming", 
-            style="Accent.TButton",  # Use the theme's accent style instead of bg/fg/font
+            bg="#28a745", fg="white", activebackground="#218838", activeforeground="white",
             command=self.toggle_stream
         )
         self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 5))
 
-        self.clear_btn = ttk.Button(control_frame, text="Clear Log", command=self.clear_log)
+        self.clear_btn = tk.Button(control_frame, text="Clear Log", command=self.clear_log)
+        self.clear_btn.config(
+            bg="#cc2900", fg="white", 
+            activebackground="#720E0E", activeforeground="white", 
+            font=("Segoe UI", 10, "bold"), relief="raised", bd=2, highlightthickness=0
+        )
         self.clear_btn.pack(side="right", expand=True, fill="x", padx=(5, 0))
 
-        output_options_frame = ttk.Frame(self.main_tab)
+        output_options_frame = tk.Frame(self.main_tab)
         output_options_frame.pack(fill="x", padx=10, pady=(5, 0))
         
-        ttk.Label(output_options_frame, text="Output Style:").pack(side="left")
+        tk.Label(output_options_frame, text="Output Style:").pack(side="left")
         
         self.output_mode = tk.StringVar(value="scroll")
-        ttk.Radiobutton(output_options_frame, text="Scrolling Log", variable=self.output_mode, value="scroll", command=self.on_mode_change).pack(side="left", padx=5)
-        ttk.Radiobutton(output_options_frame, text="In-Place Dashboard", variable=self.output_mode, value="inplace", command=self.on_mode_change).pack(side="left", padx=5)
+        tk.Radiobutton(output_options_frame, text="Scrolling Log", variable=self.output_mode, value="scroll", command=self.on_mode_change).pack(side="left", padx=5)
+        tk.Radiobutton(output_options_frame, text="In-Place Dashboard", variable=self.output_mode, value="inplace", command=self.on_mode_change).pack(side="left", padx=5)
 
         self.status_icon_label = tk.Label(output_options_frame, image=self.ui_icon_off)
         self.status_icon_label.pack(side="right", padx=20)
@@ -279,127 +406,202 @@ class OscWheelApp:
 
     def _build_settings_tab(self):
         self.settings_canvas = tk.Canvas(self.settings_tab, highlightthickness=0)
-        self.scrollbar = ttk.Scrollbar(self.settings_tab, orient="vertical", command=self.settings_canvas.yview)
         
-        self.scrollable_frame = ttk.Frame(self.settings_canvas)
+        self.v_scrollbar = tk.Scrollbar(self.settings_tab, orient="vertical", command=self.settings_canvas.yview)
+        self.h_scrollbar = tk.Scrollbar(self.settings_tab, orient="horizontal", command=self.settings_canvas.xview)
+        
+        self.scrollable_frame = tk.Frame(self.settings_canvas)
 
         self.scrollable_frame.bind("<Configure>", lambda e: self.settings_canvas.configure(scrollregion=self.settings_canvas.bbox("all")))
         self.canvas_window_id = self.settings_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        self.settings_canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.settings_canvas.bind("<Configure>", lambda e: self.settings_canvas.itemconfig(self.canvas_window_id, width=e.width))
+        
+        self.settings_canvas.configure(yscrollcommand=self.v_scrollbar.set, xscrollcommand=self.h_scrollbar.set)
 
+        def _on_canvas_configure(event):
+            req_width = self.scrollable_frame.winfo_reqwidth()
+            new_width = max(event.width, req_width)
+            self.settings_canvas.itemconfig(self.canvas_window_id, width=new_width)
+            
+        self.settings_canvas.bind("<Configure>", _on_canvas_configure)
+
+        self.h_scrollbar.pack(side="bottom", fill="x")
+        self.v_scrollbar.pack(side="right", fill="y")
         self.settings_canvas.pack(side="left", fill="both", expand=True)
-        self.scrollbar.pack(side="right", fill="y")
 
-        # --- PROFILE MANAGEMENT FRAME ---
-        profile_frame = tk.LabelFrame(self.scrollable_frame, text="Input Profile", padx=10, pady=10)
+        profile_frame = tk.LabelFrame(
+            self.scrollable_frame, 
+            text="Input Profile", 
+            padx=10, pady=10,
+            font=("Segoe UI", 10, "bold"), 
+            fg="#0052cc",
+            bd=0, relief="solid"
+        )
         profile_frame.pack(fill="x", padx=10, pady=(10, 5))
 
-        self.profile_combo = ttk.Combobox(profile_frame, textvariable=self.current_profile_name, state="readonly")
+        self.profile_combo = tk.OptionMenu(profile_frame, self.current_profile_name, "Default", command=self.on_profile_selected)
+        
+        self.profile_combo.config(
+            bg="#0052cc", fg="white", 
+            activebackground="#003d99", activeforeground="white", 
+            font=("Segoe UI", 10, "bold"), relief="raised", bd=2, highlightthickness=0
+        )
+        self.profile_combo["menu"].config(
+            bg="#f8f9fa", fg="black", 
+            activebackground="#0052cc", activeforeground="white", 
+            font=("Segoe UI", 10)
+        )
         self.profile_combo.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        self.profile_combo.bind("<<ComboboxSelected>>", self.on_profile_selected)
         self.setting_widgets.append(self.profile_combo)
 
-        self.new_prof_btn = ttk.Button(profile_frame, text="New Profile", command=self.new_profile)
+        self.new_prof_btn = tk.Button(profile_frame, text="New Profile", command=self.new_profile)
+        self.new_prof_btn.config(
+            bg="#00cc44", fg="white", 
+            activebackground="#009952", activeforeground="white", 
+            font=("Segoe UI", 10, "bold"), relief="raised", bd=2, highlightthickness=0
+        )
         self.new_prof_btn.pack(side="left", padx=2)
         self.setting_widgets.append(self.new_prof_btn)
 
-        self.del_prof_btn = ttk.Button(profile_frame, text="Delete", command=self.delete_profile)
+        self.del_prof_btn = tk.Button(profile_frame, text="Delete", command=self.delete_profile)
+        self.del_prof_btn.config(
+            bg="#cc2900", fg="white", 
+            activebackground="#720E0E", activeforeground="white", 
+            font=("Segoe UI", 10, "bold"), relief="raised", bd=2, highlightthickness=0
+        )
         self.del_prof_btn.pack(side="left", padx=2)
         self.setting_widgets.append(self.del_prof_btn)
 
-        # --- Theme Switch ---
-        theme_frame = ttk.Frame(profile_frame)
-        theme_frame.pack(side="right", padx=10)
-        
-        self.is_dark_mode = tk.BooleanVar(value=False)
-        self.theme_switch = ttk.Checkbutton(
-            theme_frame, 
-            text="Dark Mode", 
-            style="Switch.TCheckbutton", 
-            variable=self.is_dark_mode,
-            command=lambda: self.root.tk.call("set_theme", "dark" if self.is_dark_mode.get() else "light")
+        device_frame = tk.LabelFrame(
+            self.scrollable_frame, 
+            text="Input Device", 
+            padx=10, pady=10,
+            font=("Segoe UI", 10, "bold"), 
+            fg="#0052cc", 
+            bd=0, relief="solid" 
         )
-        self.theme_switch.pack(side="right")
-
-        device_frame = tk.LabelFrame(self.scrollable_frame, text="Input Device", padx=10, pady=10)
         device_frame.pack(fill="x", padx=10, pady=(10, 5))
 
         self.device_var = tk.StringVar()
-        self.device_dropdown = ttk.Combobox(device_frame, textvariable=self.device_var, state="readonly")
+        self.device_dropdown = tk.OptionMenu(device_frame, self.device_var, "")
+        
+        self.device_dropdown.config(
+            bg="#0052cc", fg="white", 
+            activebackground="#003d99", activeforeground="white", 
+            font=("Segoe UI", 10, "bold"), relief="raised", bd=2, highlightthickness=0
+        )
+        self.device_dropdown["menu"].config(
+            bg="#f8f9fa", fg="black", 
+            activebackground="#0052cc", activeforeground="white", 
+            font=("Segoe UI", 10)
+        )
+
         self.device_dropdown.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        self.device_dropdown.bind("<<ComboboxSelected>>", self.on_device_selected)
         self.setting_widgets.append(self.device_dropdown)
 
-        self.refresh_btn = ttk.Button(device_frame, text="Refresh Devices", command=self.refresh_devices)
+        self.add_device_btn = tk.Button(device_frame, text="Add Device", command=self.add_device)
+        self.add_device_btn.config(
+            bg="#00cc44", fg="white", 
+            activebackground="#009952", activeforeground="white", 
+            font=("Segoe UI", 10, "bold"), relief="raised", bd=2, highlightthickness=0
+        )
+        self.add_device_btn.pack(side="left", padx=2)
+        self.setting_widgets.append(self.add_device_btn)
+        
+        self.clear_device_btn = tk.Button(device_frame, text="Clear Devices", command=self.clear_devices)
+        self.clear_device_btn.config(
+            bg="#cc2900", fg="white", 
+            activebackground="#720E0E", activeforeground="white", 
+            font=("Segoe UI", 10, "bold"), relief="raised", bd=2, highlightthickness=0
+        )
+        self.clear_device_btn.pack(side="left", padx=2)
+        self.setting_widgets.append(self.clear_device_btn)
+
+        self.refresh_btn = tk.Button(device_frame, text="Refresh Devices", command=self.refresh_devices)
+        self.refresh_btn.config(
+            bg="#ccc900", fg="white", 
+            activebackground="#8f9900", activeforeground="white", 
+            font=("Segoe UI", 10, "bold"), relief="raised", bd=2, highlightthickness=0
+        )
         self.refresh_btn.pack(side="right")
         self.setting_widgets.append(self.refresh_btn)
 
-        # --- FORCE FEEDBACK FRAME ---
         self.ffb_frame = tk.LabelFrame(self.scrollable_frame, text="Hardware Force Feedback Parameters", padx=10, pady=10)
         
-        # Spring
-        spring_container = ttk.Frame(self.ffb_frame)
+        spring_container = tk.Frame(self.ffb_frame)
         spring_container.pack(fill="x", pady=2)
-        ttk.Label(spring_container, text="Centering Spring:", width=15, anchor="w").pack(side="left")
+        tk.Label(spring_container, text="Centering Spring:", width=15, anchor="w").pack(side="left")
         
         self.ffb_spring_var = tk.DoubleVar(value=50.0) 
-        spring_lbl = ttk.Label(spring_container, text=f"{self.ffb_spring_var.get():.0f}", width=4)
+        spring_lbl = tk.Label(spring_container, text=f"{self.ffb_spring_var.get():.0f}", width=4)
         spring_lbl.pack(side="left")
         
-        self.ffb_spring_scale = ttk.Scale(
-            spring_container, variable=self.ffb_spring_var, from_=0, to=100, orient="horizontal", 
+        self.ffb_spring_scale = tk.Scale(
+            spring_container, variable=self.ffb_spring_var, from_=0, to=100, orient="horizontal", showvalue=0,
             command=lambda v, lbl=spring_lbl: (lbl.config(text=f"{float(v):.0f}"), self.update_ffb())
         )
         self.ffb_spring_scale.pack(side="left", fill="x", expand=True, padx=5)
         self.setting_widgets.append(self.ffb_spring_scale)
 
-        # Damper
-        damper_container = ttk.Frame(self.ffb_frame)
+        damper_container = tk.Frame(self.ffb_frame)
         damper_container.pack(fill="x", pady=2)
-        ttk.Label(damper_container, text="Damper (Weight):", width=15, anchor="w").pack(side="left")
+        tk.Label(damper_container, text="Damper (Weight):", width=15, anchor="w").pack(side="left")
         
         self.ffb_damper_var = tk.DoubleVar(value=20.0) 
-        damper_lbl = ttk.Label(damper_container, text=f"{self.ffb_damper_var.get():.0f}", width=4)
+        damper_lbl = tk.Label(damper_container, text=f"{self.ffb_damper_var.get():.0f}", width=4)
         damper_lbl.pack(side="left")
         
-        self.ffb_damper_scale = ttk.Scale(
-            damper_container, variable=self.ffb_damper_var, from_=0, to=100, orient="horizontal", 
+        self.ffb_damper_scale = tk.Scale(
+            damper_container, variable=self.ffb_damper_var, from_=0, to=100, orient="horizontal", showvalue=0,
             command=lambda v, lbl=damper_lbl: (lbl.config(text=f"{float(v):.0f}"), self.update_ffb())
         )
         self.ffb_damper_scale.pack(side="left", fill="x", expand=True, padx=5)
         self.setting_widgets.append(self.ffb_damper_scale)
 
-        # Friction
-        friction_container = ttk.Frame(self.ffb_frame)
+        friction_container = tk.Frame(self.ffb_frame)
         friction_container.pack(fill="x", pady=2)
-        ttk.Label(friction_container, text="Static Friction:", width=15, anchor="w").pack(side="left")
+        tk.Label(friction_container, text="Static Friction:", width=15, anchor="w").pack(side="left")
         
         self.ffb_friction_var = tk.DoubleVar(value=10.0) 
-        friction_lbl = ttk.Label(friction_container, text=f"{self.ffb_friction_var.get():.0f}", width=4)
+        friction_lbl = tk.Label(friction_container, text=f"{self.ffb_friction_var.get():.0f}", width=4)
         friction_lbl.pack(side="left")
         
-        self.ffb_friction_scale = ttk.Scale(
-            friction_container, variable=self.ffb_friction_var, from_=0, to=100, orient="horizontal", 
+        self.ffb_friction_scale = tk.Scale(
+            friction_container, variable=self.ffb_friction_var, from_=0, to=100, orient="horizontal", showvalue=0,
             command=lambda v, lbl=friction_lbl: (lbl.config(text=f"{float(v):.0f}"), self.update_ffb())
         )
         self.ffb_friction_scale.pack(side="left", fill="x", expand=True, padx=5)
         self.setting_widgets.append(self.ffb_friction_scale)
 
-        self.preview_frame = tk.LabelFrame(self.scrollable_frame, text="Input Preview", padx=10, pady=10)
+        self.preview_frame = tk.LabelFrame(
+            self.scrollable_frame, 
+            text="Input Preview", 
+            padx=10, pady=10,
+            font=("Segoe UI", 10, "bold"), 
+            fg="#0052cc",
+            bd=0, relief="solid"
+        )
         self.preview_frame.pack(fill="x", padx=10, pady=5)
-        tk.Label(self.preview_frame, text="Waiting for device...", fg="gray").pack(pady=5)
-
-        self.axes_frame = tk.LabelFrame(self.scrollable_frame, text="Axis Configuration", padx=10, pady=10)
+        
+        self.axes_frame = tk.LabelFrame(
+            self.scrollable_frame, 
+            text="Axis Configuration", 
+            padx=10, pady=10,
+            font=("Segoe UI", 10, "bold"), 
+            fg="#0052cc",
+            bd=1, relief="solid"
+        )
         self.axes_frame.pack(fill="x", padx=10, pady=5)
-        tk.Label(self.axes_frame, text="Please connect and select a controller.", fg="gray").pack(pady=5)
 
-        #------------- BUTTON MAPPING ----------------------
-
-        buttons_frame = tk.LabelFrame(self.scrollable_frame, text="Button Mapping", padx=10, pady=10)
+        buttons_frame = tk.LabelFrame(
+            self.scrollable_frame, 
+            text="Button Mapping", 
+            padx=10, pady=10,
+            font=("Segoe UI", 10, "bold"), 
+            fg="#0052cc",
+            bd=1, relief="solid"
+        )
         buttons_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
 
-        #--Button Mapping Tooltip Label--
         help_lbl = tk.Label(buttons_frame, text="[?] Hover for help", fg="#4C98AF", cursor="question_arrow")
         help_lbl.pack(anchor="e", pady=(0, 5))
         
@@ -411,68 +613,34 @@ class OscWheelApp:
         )
         ToolTip(help_lbl, help_text)
 
-        grid_frame = ttk.Frame(buttons_frame)
-        grid_frame.pack(expand=True)
+        self.buttons_grid_frame = tk.Frame(buttons_frame)
+        self.buttons_grid_frame.pack(expand=True)
+        self._populate_buttons_frame()
 
-        for i in range(24):
-            col = (i // 12) * 5
-            row = i % 12
-            
-            # Text entry for the custom name
-            name_var = tk.StringVar(value=f"Btn {i}")
-            self.button_name_vars[i] = name_var
-            name_ent = ttk.Entry(grid_frame, textvariable=name_var, width=16)
-            name_ent.grid(row=row, column=col, sticky="e", pady=2)
-            self.setting_widgets.append(name_ent)
-            self.ui_indicators['buttons'][i] = name_ent
-            self.ui_prev_state = {'axes': {}, 'buttons': {}, 'hats': {}, 'keys': {}}
-
-            tk.Label(grid_frame, text="-> ID:").grid(row=row, column=col+1, padx=2)
-            
-            var = tk.StringVar(value=str(i))
-            ent = ttk.Entry(grid_frame, textvariable=var, width=5)
-            ent.grid(row=row, column=col+2, padx=(0, 5), pady=2)
-            self.button_vars[i] = var
-            self.setting_widgets.append(ent)
-            
-            tk.Label(grid_frame, text="Addr:").grid(row=row, column=col+3, padx=2)
-            
-            addr_var = tk.StringVar(value="")
-            addr_ent = ttk.Entry(grid_frame, textvariable=addr_var, width=12)
-            addr_ent.grid(row=row, column=col+4, padx=(0, 20), pady=2)
-            self.button_addr_vars[i] = addr_var
-            self.setting_widgets.append(addr_ent)
-
-        # --- HAT MAPPING FRAME ---
-        hats_frame = tk.LabelFrame(self.scrollable_frame, text="D-Pad / Hat Mapping", padx=10, pady=10)
+        hats_frame = tk.LabelFrame(
+            self.scrollable_frame, 
+            text="D-Pad / Hat Mapping", 
+            padx=10, pady=10,
+            font=("Segoe UI", 10, "bold"), 
+            fg="#0052cc",
+            bd=1, relief="solid"
+        )
         hats_frame.pack(fill="x", padx=10, pady=(0, 5))
         
-        hat_grid = ttk.Frame(hats_frame)
-        hat_grid.pack(expand=True)
+        self.hat_grid_frame = tk.Frame(hats_frame)
+        self.hat_grid_frame.pack(expand=True)
+        self._populate_hats_frame()
         
-        for i in range(4): # Supports up to 4 D-Pads/Hats
-            tk.Label(hat_grid, text=f"Hat {i} -> ID:").grid(row=i, column=0, sticky="e", pady=2)
-            var = tk.StringVar(value=str(i))
-            ent = ttk.Entry(hat_grid, textvariable=var, width=5)
-            ent.grid(row=i, column=1, padx=(0, 5), pady=2)
-            self.hat_vars[i] = var
-            self.setting_widgets.append(ent)
-            self.ui_indicators['hats'][i] = ent
-            
-            tk.Label(hat_grid, text="Addr:").grid(row=i, column=2, sticky="e", pady=2)
-            addr_var = tk.StringVar(value="")
-            addr_ent = ttk.Entry(hat_grid, textvariable=addr_var, width=12)
-            addr_ent.grid(row=i, column=3, padx=(0, 20), pady=2)
-            self.hat_addr_vars[i] = addr_var
-            self.setting_widgets.append(addr_ent)
-        # -----------------------------
-
-        
-        # --- KEYBOARD MAPPING FRAME ---
-        keyboard_frame = tk.LabelFrame(self.scrollable_frame, text="Global Keyboard Mapping (Key -> OSC Address / ID)", padx=10, pady=10)
+        keyboard_frame = tk.LabelFrame(
+            self.scrollable_frame, 
+            text="Global Keyboard Mapping (Key -> OSC Address / ID)", 
+            padx=10, pady=10,
+            font=("Segoe UI", 10, "bold"), 
+            fg="#0052cc",
+            bd=1, relief="solid"
+        )
         keyboard_frame.pack(fill="x", padx=10, pady=(0, 5))
         
-        #--Tooltip Label--
         help_lbl = tk.Label(keyboard_frame, text="[?] Hover for help", fg="#4C98AF", cursor="question_arrow")
         help_lbl.pack(anchor="e", pady=(0, 5))
         
@@ -486,26 +654,26 @@ class OscWheelApp:
         ToolTip(help_lbl, help_text)
 
         if KEYBOARD_AVAILABLE:
-            k_grid = ttk.Frame(keyboard_frame)
+            k_grid = tk.Frame(keyboard_frame)
             k_grid.pack(expand=True)
-            for i in range(12): # 12 slots for mapped keys
+            for i in range(12): 
                 row = i // 2
                 col = (i % 2) * 6
                 
                 tk.Label(k_grid, text=f"Slot {i+1} Key:").grid(row=row, column=col, sticky="e", pady=2)
                 k_var = tk.StringVar()
-                k_ent = ttk.Entry(k_grid, textvariable=k_var, width=5)
+                k_ent = tk.Entry(k_grid, textvariable=k_var, width=5)
                 k_ent.grid(row=row, column=col+1, padx=2, pady=2)
                 self.ui_indicators['keys'][i] = k_ent
                 
                 tk.Label(k_grid, text="-> Addr:").grid(row=row, column=col+2, sticky="e", pady=2)
                 a_var = tk.StringVar()
-                a_ent = ttk.Entry(k_grid, textvariable=a_var, width=12)
+                a_ent = tk.Entry(k_grid, textvariable=a_var, width=12)
                 a_ent.grid(row=row, column=col+3, padx=2, pady=2)
                 
                 tk.Label(k_grid, text="ID:").grid(row=row, column=col+4, sticky="e", pady=2)
                 i_var = tk.StringVar()
-                i_ent = ttk.Entry(k_grid, textvariable=i_var, width=5)
+                i_ent = tk.Entry(k_grid, textvariable=i_var, width=5)
                 i_ent.grid(row=row, column=col+5, padx=(2, 20), pady=2)
                 
                 self.keyboard_vars[i] = {'key': k_var, 'addr': a_var, 'id': i_var}
@@ -513,375 +681,414 @@ class OscWheelApp:
         else:
             tk.Label(keyboard_frame, text="Keyboard module not installed. Run 'pip install keyboard' in your environment to enable.", fg="#e74c3c").pack(pady=5)
 
-        reset_frame = ttk.Frame(self.scrollable_frame)
+        reset_frame = tk.Frame(self.scrollable_frame)
         reset_frame.pack(fill="x", padx=10, pady=20)
 
-        self.reset_btn = ttk.Button(reset_frame, text="Reset Mappings", command=self.reset_mappings)
+        self.reset_btn = tk.Button(reset_frame, text="Reset Mappings", command=self.reset_mappings)
         self.reset_btn.pack(side="right", padx=(5, 0))
         self.setting_widgets.append(self.reset_btn)
 
-        self.save_btn = ttk.Button(reset_frame, text="Save Settings", command=self.save_config)
+        self.save_btn = tk.Button(reset_frame, text="Save Settings", command=self.save_config)
         self.save_btn.pack(side="right")
         self.setting_widgets.append(self.save_btn)
 
-        self._bind_mousewheel(self.scrollable_frame)
-
     def _on_mousewheel(self, event):
-        if self.notebook.select() == self.settings_tab._w:
-            scroll_dir = int(-1*(event.delta/120))
-            self.settings_canvas.yview_scroll(scroll_dir, "units")
+            if getattr(self, 'current_tab', None) == self.settings_tab:
+                if event.widget.winfo_class() not in ('OptionMenu', 'Listbox'):
+                    scroll_dir = int(-1*(event.delta/120))
+                    self.settings_canvas.yview_scroll(scroll_dir, "units")
 
-    def _bind_mousewheel(self, widget):
-        widget.bind("<MouseWheel>", self._on_mousewheel)
-        for child in widget.winfo_children():
-            self._bind_mousewheel(child)
+    def _create_button_grid(self, parent, offset, count):
+        for i in range(count):
+            global_i = offset + i
+            col = (i // 12) * 5
+            row = i % 12
+            
+            if global_i not in self.button_name_vars:
+                self.button_name_vars[global_i] = tk.StringVar(value=f"Btn {global_i}")
+            if global_i not in self.button_vars:
+                self.button_vars[global_i] = tk.StringVar(value=str(global_i))
+            if global_i not in self.button_addr_vars:
+                self.button_addr_vars[global_i] = tk.StringVar(value="")
+            
+            name_var = self.button_name_vars[global_i]
+            name_ent = tk.Entry(parent, textvariable=name_var, width=16)
+            name_ent.grid(row=row, column=col, sticky="e", pady=2)
+            self.setting_widgets.append(name_ent)
+            self.ui_indicators['buttons'][global_i] = name_ent
 
-    def _populate_preview_frame(self, num_axes):
+            tk.Label(parent, text="-> ID:").grid(row=row, column=col+1, padx=2)
+            
+            var = self.button_vars[global_i]
+            ent = tk.Entry(parent, textvariable=var, width=5)
+            ent.grid(row=row, column=col+2, padx=(0, 5), pady=2)
+            self.setting_widgets.append(ent)
+            
+            tk.Label(parent, text="Addr:").grid(row=row, column=col+3, padx=2)
+            
+            addr_var = self.button_addr_vars[global_i]
+            addr_ent = tk.Entry(parent, textvariable=addr_var, width=12)
+            addr_ent.grid(row=row, column=col+4, padx=(0, 20), pady=2)
+            self.setting_widgets.append(addr_ent)
+
+    def _populate_buttons_frame(self):
+            for widget in self.buttons_grid_frame.winfo_children():
+                widget.destroy()
+
+            if not self.active_joysticks:
+                tk.Label(self.buttons_grid_frame, text="No devices connected. Default 24 slots shown below:", fg="gray").pack(pady=5)
+                # Create a dedicated inner frame for the grid so pack and grid don't mix
+                default_grid_frame = tk.Frame(self.buttons_grid_frame)
+                default_grid_frame.pack(expand=True)
+                self._create_button_grid(default_grid_frame, 0, 24)
+                return
+
+            for d in self.active_joysticks:
+                dev_frame = tk.LabelFrame(self.buttons_grid_frame, text=f"Device: {d['name'].title()}", fg="#00cc44", bd=1, relief="solid")
+                dev_frame.pack(fill="x", padx=5, pady=5)
+                inner_frame = tk.Frame(dev_frame)
+                inner_frame.pack(expand=True)
+                self._create_button_grid(inner_frame, d['btn_off'], d['num_buttons'])
+
+    def _create_hat_grid(self, parent, offset, count):
+        for i in range(count):
+            global_i = offset + i
+            if global_i not in self.hat_vars:
+                self.hat_vars[global_i] = tk.StringVar(value=str(global_i))
+            if global_i not in self.hat_addr_vars:
+                self.hat_addr_vars[global_i] = tk.StringVar(value="")
+                
+            tk.Label(parent, text=f"Hat {i} -> ID:").grid(row=i, column=0, sticky="e", pady=2)
+            var = self.hat_vars[global_i]
+            ent = tk.Entry(parent, textvariable=var, width=5)
+            ent.grid(row=i, column=1, padx=(0, 5), pady=2)
+            self.setting_widgets.append(ent)
+            self.ui_indicators['hats'][global_i] = ent
+            
+            tk.Label(parent, text="Addr:").grid(row=i, column=2, sticky="e", pady=2)
+            addr_var = self.hat_addr_vars[global_i]
+            addr_ent = tk.Entry(parent, textvariable=addr_var, width=12)
+            addr_ent.grid(row=i, column=3, padx=(0, 20), pady=2)
+            self.setting_widgets.append(addr_ent)
+
+    def _populate_hats_frame(self):
+        for widget in self.hat_grid_frame.winfo_children():
+            widget.destroy()
+            
+        if not self.active_joysticks:
+            tk.Label(self.hat_grid_frame, text="No devices connected. Default 4 slots shown below:", fg="gray").pack(pady=5)
+            # Create a dedicated inner frame for the hat grid
+            default_hat_frame = tk.Frame(self.hat_grid_frame)
+            default_hat_frame.pack(expand=True)
+            self._create_hat_grid(default_hat_frame, 0, 4)
+            return
+            
+        for d in self.active_joysticks:
+            if d['num_hats'] > 0:
+                dev_frame = tk.LabelFrame(self.hat_grid_frame, text=f"Device: {d['name'].title()}", fg="#00cc44", bd=1, relief="solid")
+                dev_frame.pack(fill="x", padx=5, pady=5)
+                inner_frame = tk.Frame(dev_frame)
+                inner_frame.pack(expand=True)
+                self._create_hat_grid(inner_frame, d['hat_off'], d['num_hats'])
+
+    def _populate_preview_frame(self):
         for widget in self.preview_frame.winfo_children():
             widget.destroy()
             
-        self.wheel_canvas = None
-        self.wheel_spoke_id = None
-        self.wheel_text_id = None
-        self.pedal_canvases.clear()
-        self.pedal_rect_ids.clear()
+        self.device_previews = getattr(self, 'device_previews', [])
+        self.device_previews.clear()
         
-        self.preview_canvases.clear()
-        self.preview_dots.clear()
-        self.std_grid_axes.clear()
-        self.std_trigger_axes.clear()
-        
-        if num_axes == 0:
+        if not self.active_joysticks:
             tk.Label(self.preview_frame, text="Selected device has no valid axes.", fg="gray").pack(pady=5)
             return
 
-        if self.is_wheel:
-            container = ttk.Frame(self.preview_frame)
-            container.pack(expand=True, pady=10)
+        for d in self.active_joysticks:
+            preview_dict = {
+                'is_wheel': False,
+                'wheel_canvas': None,
+                'wheel_spoke_id': None,
+                'wheel_text_id': None,
+                'pedal_canvases': [],
+                'pedal_rect_ids': [],
+                'preview_canvases': [],
+                'preview_dots': [],
+                'std_grid_axes': [],
+                'std_trigger_axes': [],
+                'preview_labels': []
+            }
+            
+            name = d['name']
+            wheel_keywords = ['wheel', 'racing', 'g29', 'g920', 'thrustmaster', 'fanatec', 'moza']
+            joy_type = sdl2.SDL_JoystickGetType(d['joy'])
+            is_wheel = (joy_type == sdl2.SDL_JOYSTICK_TYPE_WHEEL) or any(kw in name for kw in wheel_keywords)
+            preview_dict['is_wheel'] = is_wheel
+            
+            dev_frame = tk.LabelFrame(self.preview_frame, text=f"Device: {name.title()}", fg="#00cc44", bd=1, relief="solid")
+            dev_frame.pack(fill="x", padx=5, pady=5)
 
-            wheel_frame = ttk.Frame(container)
-            wheel_frame.pack(side="left", padx=20)
-            tk.Label(wheel_frame, text="Axis 0 (Steering)").pack(pady=(0, 5))
-            
-            self.wheel_size = 140
-            self.wheel_center = self.wheel_size // 2
-            self.wheel_radius = 60
-            
-            self.wheel_canvas = tk.Canvas(wheel_frame, width=self.wheel_size, height=self.wheel_size, bg="black", highlightthickness=0)
-            self.wheel_canvas.pack()
-            
-            self.wheel_canvas.create_oval(
-                self.wheel_center - self.wheel_radius, self.wheel_center - self.wheel_radius,
-                self.wheel_center + self.wheel_radius, self.wheel_center + self.wheel_radius,
-                outline="#555555", width=4
-            )
-            self.wheel_canvas.create_oval(
-                self.wheel_center - 4, self.wheel_center - 4,
-                self.wheel_center + 4, self.wheel_center + 4,
-                fill="#0084ff"
-            )
-            
-            self.wheel_spoke_id = self.wheel_canvas.create_line(
-                self.wheel_center, self.wheel_center,
-                self.wheel_center, self.wheel_center - self.wheel_radius,
-                fill="#0084ff", width=3
-            )
-            
-            self.wheel_text_id = self.wheel_canvas.create_text(
-                self.wheel_center, self.wheel_center + 30, text="0°", fill="white", font=("Segoe UI", 10, "bold")
-            )
+            num_axes = d['num_axes']
+            ax_off = d['ax_off']
 
-            if num_axes > 1:
-                pedals_frame = ttk.Frame(container)
-                pedals_frame.pack(side="left", padx=20)
+            if num_axes == 0:
+                tk.Label(dev_frame, text="No axes to preview.", fg="gray").pack(pady=5)
+                self.device_previews.append(preview_dict)
+                continue
+
+            if is_wheel:
+                container = tk.Frame(dev_frame)
+                container.pack(expand=True, pady=10)
+
+                wheel_frame = tk.Frame(container)
+                wheel_frame.pack(side="left", padx=20)
+                w_lbl = tk.Label(wheel_frame, text="")
+                w_lbl.pack(pady=(0, 5))
+                preview_dict['preview_labels'].append({'label': w_lbl, 'type': 'wheel', 'axes': [ax_off + 0]})
                 
-                for i in range(1, num_axes):
-                    p_frame = ttk.Frame(pedals_frame)
-                    p_frame.pack(side="left", padx=10)
-                    tk.Label(p_frame, text=f"Axis {i}").pack(pady=(0, 5))
+                preview_dict['wheel_canvas'] = tk.Canvas(wheel_frame, width=self.canvas_size, height=self.canvas_size, bg="black", highlightthickness=0)
+                preview_dict['wheel_canvas'].pack()
+                
+                preview_dict['wheel_canvas'].create_oval(
+                    self.center - self.radius, self.center - self.radius,
+                    self.center + self.radius, self.center + self.radius,
+                    outline="#555555", width=4
+                )
+                preview_dict['wheel_canvas'].create_oval(
+                    self.center - 4, self.center - 4,
+                    self.center + 4, self.center + 4,
+                    fill="#15ff00"
+                )
+                
+                preview_dict['wheel_spoke_id'] = preview_dict['wheel_canvas'].create_line(
+                    self.center, self.center,
+                    self.center, self.center - self.radius,
+                    fill="#15ff00", width=3
+                )
+                
+                preview_dict['wheel_text_id'] = preview_dict['wheel_canvas'].create_text(
+                    self.center, self.center + 30, text="0°", fill="white", font=("Segoe UI", 10, "bold")
+                )
+
+                if num_axes > 1:
+                    pedals_frame = tk.Frame(container)
+                    pedals_frame.pack(side="left", padx=20)
+                    
+                    for i in range(1, num_axes):
+                        p_frame = tk.Frame(pedals_frame)
+                        p_frame.pack(side="left", padx=10)
+                        p_lbl = tk.Label(p_frame, text="")
+                        p_lbl.pack(pady=(0, 5))
+                        preview_dict['preview_labels'].append({'label': p_lbl, 'type': 'single', 'axes': [ax_off + i]})
+                        
+                        p_width = 30
+                        p_height = 140
+                        p_canvas = tk.Canvas(p_frame, width=p_width, height=p_height, bg="black", highlightthickness=0)
+                        p_canvas.pack()
+                        
+                        p_canvas.create_rectangle(2, 2, p_width-2, p_height-2, outline="#555555", width=2)
+                        rect_id = p_canvas.create_rectangle(4, p_height-4, p_width-4, p_height-4, fill="#15ff00", outline="")
+                        
+                        preview_dict['pedal_canvases'].append(p_canvas)
+                        preview_dict['pedal_rect_ids'].append(rect_id)
+            else:
+                container = tk.Frame(dev_frame)
+                container.pack(expand=True, pady=5)
+                
+                grid_axes = [i for i in range(num_axes) if i not in (4, 5)]
+                trigger_axes = [i for i in range(num_axes) if i in (4, 5)]
+                
+                grid_frame = tk.Frame(container)
+                grid_frame.pack(side="left")
+                
+                if trigger_axes:
+                    trigger_frame = tk.Frame(container)
+                    trigger_frame.pack(side="left", padx=(20 if grid_axes else 0))
+                
+                num_pairs = math.ceil(len(grid_axes) / 2)
+                dot_r = 6
+                for i in range(num_pairs):
+                    col = i % 3
+                    row = i // 3
+                    
+                    pair_frame = tk.Frame(grid_frame)
+                    pair_frame.grid(row=row, column=col, padx=15, pady=5)
+                    
+                    ax_x = grid_axes[i*2]
+                    ax_y = grid_axes[i*2+1] if (i*2+1) < len(grid_axes) else None
+                    preview_dict['std_grid_axes'].append((ax_x, ax_y))
+                    
+                    pair_lbl = tk.Label(pair_frame, text="")
+                    pair_lbl.pack()
+                    preview_dict['preview_labels'].append({'label': pair_lbl, 'type': 'pair', 'axes': [ax_off + ax_x, ax_off + ax_y if ax_y is not None else None]})
+                    
+                    canvas = tk.Canvas(pair_frame, width=self.canvas_size, height=self.canvas_size, bg="black", highlightthickness=0)
+                    canvas.pack()
+                    
+                    grid_color = "#222222"
+                    for step in range(10, self.canvas_size, 10):
+                        canvas.create_line(step, 0, step, self.canvas_size, fill=grid_color)
+                        canvas.create_line(0, step, self.canvas_size, step, fill=grid_color)
+                        
+                    canvas.create_oval(self.center - self.radius, self.center - self.radius,
+                                       self.center + self.radius, self.center + self.radius,
+                                       outline="#555555", width=2)
+                    canvas.create_line(self.center, 0, self.center, self.canvas_size, fill="#666666", width=2)
+                    canvas.create_line(0, self.center, self.canvas_size, self.center, fill="#666666", width=2)
+                    
+                    red_dot = canvas.create_oval(self.center - dot_r, self.center - dot_r,
+                                                 self.center + dot_r, self.center + dot_r,
+                                                 fill="red", outline="red")
+                                                 
+                    preview_dict['preview_canvases'].append(canvas)
+                    preview_dict['preview_dots'].append(red_dot)
+                    
+                for ax in trigger_axes:
+                    t_frame = tk.Frame(trigger_frame)
+                    t_frame.pack(side="left", padx=10)
+                    t_lbl = tk.Label(t_frame, text="")
+                    t_lbl.pack(pady=(0, 5))
+                    preview_dict['preview_labels'].append({'label': t_lbl, 'type': 'trigger', 'axes': [ax_off + ax]})
+                    
+                    preview_dict['std_trigger_axes'].append(ax)
                     
                     p_width = 30
                     p_height = 140
-                    p_canvas = tk.Canvas(p_frame, width=p_width, height=p_height, bg="black", highlightthickness=0)
+                    p_canvas = tk.Canvas(t_frame, width=p_width, height=p_height, bg="black", highlightthickness=0)
                     p_canvas.pack()
                     
                     p_canvas.create_rectangle(2, 2, p_width-2, p_height-2, outline="#555555", width=2)
-                    rect_id = p_canvas.create_rectangle(4, p_height-4, p_width-4, p_height-4, fill="#0084ff", outline="")
+                    rect_id = p_canvas.create_rectangle(4, p_height-4, p_width-4, p_height-4, fill="#15ff00", outline="")
                     
-                    self.pedal_canvases.append(p_canvas)
-                    self.pedal_rect_ids.append(rect_id)
-        else:
-            container = ttk.Frame(self.preview_frame)
-            container.pack(expand=True, pady=5)
-            
-            grid_axes = [i for i in range(num_axes) if i not in (4, 5)]
-            trigger_axes = [i for i in range(num_axes) if i in (4, 5)]
-            
-            grid_frame = ttk.Frame(container)
-            grid_frame.pack(side="left")
-            
-            if trigger_axes:
-                trigger_frame = ttk.Frame(container)
-                trigger_frame.pack(side="left", padx=(20 if grid_axes else 0))
-            
-            num_pairs = math.ceil(len(grid_axes) / 2)
-            dot_r = 6
-            for i in range(num_pairs):
-                col = i % 3
-                row = i // 3
-                
-                pair_frame = ttk.Frame(grid_frame)
-                pair_frame.grid(row=row, column=col, padx=15, pady=5)
-                
-                ax_x = grid_axes[i*2]
-                ax_y = grid_axes[i*2+1] if (i*2+1) < len(grid_axes) else None
-                self.std_grid_axes.append((ax_x, ax_y))
-                
-                lbl_text = f"Axes {ax_x} & {ax_y}" if ax_y is not None else f"Axis {ax_x}"
-                tk.Label(pair_frame, text=lbl_text).pack()
-                
-                canvas = tk.Canvas(pair_frame, width=self.canvas_size, height=self.canvas_size, bg="black", highlightthickness=0)
-                canvas.pack()
-                
-                grid_color = "#222222"
-                for step in range(10, self.canvas_size, 10):
-                    canvas.create_line(step, 0, step, self.canvas_size, fill=grid_color)
-                    canvas.create_line(0, step, self.canvas_size, step, fill=grid_color)
-                    
-                canvas.create_oval(self.center - self.radius, self.center - self.radius,
-                                   self.center + self.radius, self.center + self.radius,
-                                   outline="#555555", width=2)
-                canvas.create_line(self.center, 0, self.center, self.canvas_size, fill="#666666", width=2)
-                canvas.create_line(0, self.center, self.canvas_size, self.center, fill="#666666", width=2)
-                
-                red_dot = canvas.create_oval(self.center - dot_r, self.center - dot_r,
-                                             self.center + dot_r, self.center + dot_r,
-                                             fill="red", outline="red")
-                                             
-                self.preview_canvases.append(canvas)
-                self.preview_dots.append(red_dot)
-                
-            for ax in trigger_axes:
-                t_frame = ttk.Frame(trigger_frame)
-                t_frame.pack(side="left", padx=10)
-                tk.Label(t_frame, text=f"Axis {ax}\n(Trigger)").pack(pady=(0, 5))
-                
-                self.std_trigger_axes.append(ax)
-                
-                p_width = 30
-                p_height = 140
-                p_canvas = tk.Canvas(t_frame, width=p_width, height=p_height, bg="black", highlightthickness=0)
-                p_canvas.pack()
-                
-                p_canvas.create_rectangle(2, 2, p_width-2, p_height-2, outline="#555555", width=2)
-                rect_id = p_canvas.create_rectangle(4, p_height-4, p_width-4, p_height-4, fill="#0084ff", outline="")
-                
-                self.pedal_canvases.append(p_canvas)
-                self.pedal_rect_ids.append(rect_id)
-            
-        self._bind_mousewheel(self.preview_frame)
+                    preview_dict['pedal_canvases'].append(p_canvas)
+                    preview_dict['pedal_rect_ids'].append(rect_id)
 
-    def _populate_axes_frame(self, num_axes):
+            self.device_previews.append(preview_dict)
+            
+        self._update_preview_labels()
+
+    def _populate_axes_frame(self):
         self.setting_widgets = [w for w in self.setting_widgets if w.winfo_exists()]
         
         for widget in self.axes_frame.winfo_children():
             widget.destroy()
             
-        if num_axes == 0:
-            tk.Label(self.axes_frame, text="Selected device has no valid axes.", fg="gray").pack(pady=5)
+        if not self.active_joysticks:
+            tk.Label(self.axes_frame, text="Please connect and select a controller.", fg="gray").pack(pady=5)
             return
 
         profile_data = self.profiles.get(self.current_profile_name.get(), {})
         custom_axes_data = profile_data.get("axes", {})
 
-        for axis_idx in range(num_axes):
-            row_frame = ttk.Frame(self.axes_frame)
-            row_frame.pack(fill="x", pady=5)
+        for d in self.active_joysticks:
+            dev_frame = tk.LabelFrame(self.axes_frame, text=f"Device: {d['name'].title()}", fg="#00cc44", bd=1, relief="solid")
+            dev_frame.pack(fill="x", padx=5, pady=5)
             
-            if axis_idx not in self.axis_config:
-                self.axis_config[axis_idx] = {
-                    'name_var': tk.StringVar(value=f"Axis {axis_idx}"),
-                    'id_var': tk.StringVar(value=str(axis_idx)),
-                    'addr_var': tk.StringVar(value=""),
-                    'inv_var': tk.BooleanVar(value=False),
-                    'sens_var': tk.DoubleVar(value=1.0),
-                    'dead_var': tk.DoubleVar(value=0.0)
-                }
-            config = self.axis_config[axis_idx]
+            num_axes = d['num_axes']
+            ax_off = d['ax_off']
             
-            saved_name = f"Axis {axis_idx}"
-            if str(axis_idx) in custom_axes_data:
-                saved_name = custom_axes_data[str(axis_idx)].get("custom_name", saved_name)
-            config['name_var'].set(saved_name)
-            
-            name_entry = ttk.Entry(row_frame, textvariable=config['name_var'], width=15)
-            name_entry.pack(side="left")
-            self.setting_widgets.append(name_entry)
-            self.ui_indicators['axes'][axis_idx] = name_entry
-            
-            tk.Label(row_frame, text="-> ID:").pack(side="left")
-            id_entry = ttk.Entry(row_frame, textvariable=config['id_var'], width=4)
-            id_entry.pack(side="left", padx=(2, 5))
-            self.setting_widgets.append(id_entry)
-            
-            tk.Label(row_frame, text="Addr:").pack(side="left")
-            addr_entry = ttk.Entry(row_frame, textvariable=config['addr_var'], width=12)
-            addr_entry.pack(side="left", padx=(2, 5))
-            self.setting_widgets.append(addr_entry)
-            
-            chk = ttk.Checkbutton(row_frame, text="Invert", variable=config['inv_var'])
-            chk.pack(side="left", padx=2)
-            self.setting_widgets.append(chk)
-            
-            # --- Deadzone Scale & Label ---
-            tk.Label(row_frame, text="Deadzone:").pack(side="left", padx=(5, 0))
-
-            # 1. Create a label to hold the number, initialized with the current variable value
-            dead_val_lbl = tk.Label(row_frame, text=f"{config['dead_var'].get():.2f}", width=4)
-            dead_val_lbl.pack(side="left")
-
-            # 2. Pass a lambda to the command argument to update the label text, formatted to 2 decimal places
-            dead_scale = ttk.Scale(
-                row_frame, variable=config['dead_var'], from_=0.0, to=0.5, orient="horizontal", length=80,
-                command=lambda v, lbl=dead_val_lbl: lbl.config(text=f"{float(v):.2f}")
-            )
-            dead_scale.pack(side="left", padx=2)
-            self.setting_widgets.append(dead_scale)
-
-
-            # --- Sensitivity Scale & Label ---
-            tk.Label(row_frame, text="Sens:").pack(side="left", padx=(5, 0))
-
-            # 1. Create the label
-            sens_val_lbl = tk.Label(row_frame, text=f"{config['sens_var'].get():.1f}", width=4)
-            sens_val_lbl.pack(side="left")
-
-            # 2. Update to 1 decimal place dynamically
-            sens_scale = ttk.Scale(
-                row_frame, variable=config['sens_var'], from_=0.1, to=5.0, orient="horizontal",
-                command=lambda v, lbl=sens_val_lbl: lbl.config(text=f"{float(v):.1f}")
-            )
-            sens_scale.pack(side="left", fill="x", expand=True, padx=2)
-            self.setting_widgets.append(sens_scale)
-            
-        self._bind_mousewheel(self.axes_frame)
-
-    def _preview_loop(self):
-    # --- ALWAYS-ON KEYBOARD FLASHING ---
-        if KEYBOARD_AVAILABLE and self.notebook.select() == self.settings_tab._w:
-            for i, k_vars in self.keyboard_vars.items():
-                k = k_vars['key'].get().strip()
-                if k:
-                    try:
-                        val = 1 if keyboard.is_pressed(k) else 0
-                    except ValueError:
-                        val = 0
-                    if val == 1 and self.ui_prev_state['keys'].get(i, 0) == 0:
-                        self._flash_widget('keys', i)
-                    self.ui_prev_state['keys'][i] = val
-
-        if self.joystick:
-            if not self.is_running:
-                sdl2.SDL_JoystickUpdate()
-            
-            # --- ALWAYS-ON CONTROLLER FLASHING ---
-            if self.notebook.select() == self.settings_tab._w:
-                num_axes = sdl2.SDL_JoystickNumAxes(self.joystick)
-                num_buttons = sdl2.SDL_JoystickNumButtons(self.joystick)
-                num_hats = sdl2.SDL_JoystickNumHats(self.joystick)
-
-                # 1. Check Axes
-                for i in range(num_axes):
-                    val = sdl2.SDL_JoystickGetAxis(self.joystick, i) / 32767.0
-                    # Only flash if moved significantly (ignores slight stick drift)
-                    if abs(self.ui_prev_state['axes'].get(i, val) - val) > 0.05:
-                        self._flash_widget('axes', i)
-                    self.ui_prev_state['axes'][i] = val
-                    
-                # 2. Check Buttons
-                for i in range(num_buttons):
-                    val = sdl2.SDL_JoystickGetButton(self.joystick, i)
-                    if val == 1 and self.ui_prev_state['buttons'].get(i, 0) == 0:
-                        self._flash_widget('buttons', i)
-                    self.ui_prev_state['buttons'][i] = val
-                    
-                # 3. Check Hats (D-Pad)
-                for i in range(num_hats):
-                    val = sdl2.SDL_JoystickGetHat(self.joystick, i)
-                    if val != 0 and self.ui_prev_state['hats'].get(i, 0) == 0:
-                        self._flash_widget('hats', i)
-                    self.ui_prev_state['hats'][i] = val
-
-        if self.joystick:
-            if not self.is_running:
-                sdl2.SDL_JoystickUpdate()
-            
-            num_axes = sdl2.SDL_JoystickNumAxes(self.joystick)
-            
-            if self.is_wheel:
-                if num_axes > 0 and self.wheel_canvas and self.wheel_spoke_id:
-                    raw_0 = sdl2.SDL_JoystickGetAxis(self.joystick, 0) / 32767.0
-                    val_0 = self.get_axis_value(0, raw_0)
-                    
-                    current_deg = val_0 * 450.0
-                    angle = math.radians(current_deg - 90)
-                    
-                    end_x = self.wheel_center + self.wheel_radius * math.cos(angle)
-                    end_y = self.wheel_center + self.wheel_radius * math.sin(angle)
-                    
-                    self.wheel_canvas.coords(self.wheel_spoke_id, self.wheel_center, self.wheel_center, end_x, end_y)
-                    self.wheel_canvas.itemconfig(self.wheel_text_id, text=f"{int(current_deg)}°")
+            for i in range(num_axes):
+                axis_idx = ax_off + i
+                axis_container = tk.Frame(dev_frame)
+                axis_container.pack(fill="x", pady=8)
                 
-                for i in range(1, num_axes):
-                    idx = i - 1
-                    if idx < len(self.pedal_canvases):
-                        raw_val = sdl2.SDL_JoystickGetAxis(self.joystick, i) / 32767.0
-                        val = self.get_axis_value(i, raw_val)
-                        
-                        pct = (val + 1.0) / 2.0
-                        
-                        p_height = 140
-                        y2 = p_height - 4 
-                        y1 = y2 - (pct * (p_height - 8)) 
-                        
-                        self.pedal_canvases[idx].coords(self.pedal_rect_ids[idx], 4, y1, 30-4, y2)
-            else:
-                for i, (ax_x, ax_y) in enumerate(self.std_grid_axes):
-                    if i >= len(self.preview_canvases):
-                        break
-                        
-                    x_val, y_val = 0.0, 0.0
-                    
-                    if ax_x < num_axes:
-                        raw_x = sdl2.SDL_JoystickGetAxis(self.joystick, ax_x) / 32767.0
-                        x_val = self.get_axis_value(ax_x, raw_x)
-                    if ax_y is not None and ax_y < num_axes:
-                        raw_y = sdl2.SDL_JoystickGetAxis(self.joystick, ax_y) / 32767.0
-                        y_val = self.get_axis_value(ax_y, raw_y)
-                        
-                    draw_x = self.center + (x_val * self.radius)
-                    draw_y = self.center + (y_val * self.radius)
-                    
-                    dot_r = 6
-                    self.preview_canvases[i].coords(self.preview_dots[i], draw_x - dot_r, draw_y - dot_r, draw_x + dot_r, draw_y + dot_r)
+                if axis_idx not in self.axis_config:
+                    name_var = tk.StringVar(value=f"Axis {axis_idx}")
+                    name_var.trace_add("write", self._update_preview_labels)
+                    self.axis_config[axis_idx] = {
+                        'name_var': tk.StringVar(value=f"Axis {axis_idx}"),
+                        'id_var': tk.StringVar(value=str(axis_idx)),
+                        'addr_var': tk.StringVar(value=""),
+                        'inv_var': tk.BooleanVar(value=False),
+                        'sens_var': tk.DoubleVar(value=1.0),
+                        'dead_var': tk.DoubleVar(value=0.0),
+                        'curve_var': tk.DoubleVar(value=1.0),
+                        'smooth_var': tk.DoubleVar(value=0.0)
+                    }
+                config = self.axis_config[axis_idx]
                 
-                for i, ax in enumerate(self.std_trigger_axes):
-                    if i >= len(self.pedal_canvases):
-                        break
-                        
-                    raw_val = sdl2.SDL_JoystickGetAxis(self.joystick, ax) / 32767.0
-                    val = self.get_axis_value(ax, raw_val)
-                    
-                    pct = (val + 1.0) / 2.0
-                    
-                    p_height = 140
-                    y2 = p_height - 4 
-                    y1 = y2 - (pct * (p_height - 8)) 
-                    
-                    self.pedal_canvases[i].coords(self.pedal_rect_ids[i], 4, y1, 30-4, y2)
-            
-        self.root.after(20, self._preview_loop) 
+                saved_name = f"Axis {axis_idx}"
+                if str(axis_idx) in custom_axes_data:
+                    saved_name = custom_axes_data[str(axis_idx)].get("custom_name", saved_name)
+                config['name_var'].set(saved_name)
+                
+                top_row = tk.Frame(axis_container)
+                top_row.pack(fill="x", pady=(0, 5))
+                
+                name_entry = tk.Entry(top_row, textvariable=config['name_var'], width=15)
+                name_entry.pack(side="left")
+                self.setting_widgets.append(name_entry)
+                self.ui_indicators['axes'][axis_idx] = name_entry
+                
+                tk.Label(top_row, text="-> ID:").pack(side="left", padx=(15, 2))
+                id_entry = tk.Entry(top_row, textvariable=config['id_var'], width=4)
+                id_entry.pack(side="left")
+                self.setting_widgets.append(id_entry)
+                
+                tk.Label(top_row, text="Addr:").pack(side="left", padx=(15, 2))
+                addr_entry = tk.Entry(top_row, textvariable=config['addr_var'], width=18)
+                addr_entry.pack(side="left")
+                self.setting_widgets.append(addr_entry)
 
+                bottom_row = tk.Frame(axis_container)
+                bottom_row.pack(fill="x")
+
+                third_row = tk.Frame(axis_container)
+                third_row.pack(fill="x")
+
+                chk = tk.Checkbutton(top_row, text="Invert   ", variable=config['inv_var'])
+                chk.pack(side="left", padx=(20, 0))
+                self.setting_widgets.append(chk)
+
+                dz_frame = tk.Frame(bottom_row)
+                dz_frame.pack(side="left", expand=True, fill="x", padx=(0, 5))
+                tk.Label(dz_frame, text="Deadzone:").pack(side="left")
+                dead_val_lbl = tk.Label(dz_frame, text=f"{config['dead_var'].get():.2f}", width=4)
+                dead_val_lbl.pack(side="left")
+                dead_scale = tk.Scale(
+                    dz_frame, variable=config['dead_var'], from_=0.0, to=0.5, orient="horizontal", showvalue=0, resolution=0.01,
+                    command=lambda v, lbl=dead_val_lbl: lbl.config(text=f"{float(v):.2f}")
+                )
+                dead_scale.pack(side="left", fill="x", expand=True)
+                self.setting_widgets.append(dead_scale)
+
+                sens_frame = tk.Frame(bottom_row)
+                sens_frame.pack(side="left", expand=True, fill="x", padx=5)
+                tk.Label(sens_frame, text="Sens:").pack(side="left")
+                sens_val_lbl = tk.Label(sens_frame, text=f"{config['sens_var'].get():.1f}", width=3)
+                sens_val_lbl.pack(side="left")
+                sens_scale = tk.Scale(
+                    sens_frame, variable=config['sens_var'], from_=0.1, to=5.0, orient="horizontal", showvalue=0, resolution=0.1,
+                    command=lambda v, lbl=sens_val_lbl: lbl.config(text=f"{float(v):.1f}")
+                )
+                sens_scale.pack(side="left", fill="x", expand=True)
+                self.setting_widgets.append(sens_scale)
+
+                curve_frame = tk.Frame(third_row)
+                curve_frame.pack(side="left", expand=True, fill="x", padx=5)
+                tk.Label(curve_frame, text="Curve:").pack(side="left")
+                curve_val_lbl = tk.Label(curve_frame, text=f"{config['curve_var'].get():.1f}", width=3)
+                curve_val_lbl.pack(side="left")
+                curve_scale = tk.Scale(
+                    curve_frame, variable=config['curve_var'], from_=0.1, to=5.0, orient="horizontal", showvalue=0, resolution=0.1,
+                    command=lambda v, lbl=curve_val_lbl: lbl.config(text=f"{float(v):.1f}")
+                )
+                curve_scale.pack(side="left", fill="x", expand=True)
+                self.setting_widgets.append(curve_scale)
+
+                smooth_frame = tk.Frame(third_row)
+                smooth_frame.pack(side="left", expand=True, fill="x", padx=(5, 0))
+                tk.Label(smooth_frame, text="Smooth:").pack(side="left")
+                smooth_val_lbl = tk.Label(smooth_frame, text=f"{config['smooth_var'].get():.2f}", width=4)
+                smooth_val_lbl.pack(side="left")
+                smooth_scale = tk.Scale(
+                    smooth_frame, variable=config['smooth_var'], from_=0.0, to=0.99, orient="horizontal", showvalue=0, resolution=0.01,
+                    command=lambda v, lbl=smooth_val_lbl: lbl.config(text=f"{float(v):.2f}")
+                )
+                smooth_scale.pack(side="left", fill="x", expand=True)
+                self.setting_widgets.append(smooth_scale)
+
+                if i < num_axes - 1:
+                    tk.Frame(dev_frame, height=2, bd=1, relief="sunken").pack(fill="x", pady=(10, 0))
+            
     def _build_help_tab(self):
         help_text = scrolledtext.ScrolledText(
             self.help_tab, wrap=tk.WORD, font=("Segoe UI", 10),
@@ -898,7 +1105,7 @@ class OscWheelApp:
 
         content = [
                     ("Controller 2 OSC \n", "h1"),
-                    ("Version 2.4.1\n", "code"),
+                    ("Version 2.4.3\n", "code"),
                     ("\n C2O is a lightweight, GUI-driven Python application designed to seamlessly bridge the gap between physical hardware and digital environments. It reads real-time data from connected USB steering wheels, Bluetooth gamepads, joysticks, and keyboards. Capturing everything from continuous analog axes (like pedals and throttles) to discrete button presses and D-pad movements.\n\n", ""),
                     ("The application translates and broadcasts these inputs over a local network using the Open Sound Control (OSC) protocol, ensuring low-latency communication without the need for heavy middleware.\n\n", ""),
                     ("C2O was developed as, and aims to be a versatile solution for mapping physical simulation hardware to Massive Loop.\n\n", ""),
@@ -949,12 +1156,19 @@ class OscWheelApp:
                     ("Adjust the static friction dynamically.\n", "code"),
                     ("\n\n", ""),
 
+                    ("Version 2.4.3 QOL Update\n", "h2"),
+                    ("• Adding better multi-device support. The input settings dynamically changes based on the controllers / devices you add\n", "bullet"),
+
+                     ("Version 2.4.2 QOL Update\n", "h2"),
+                     ("• Reverted back to retro GUI for optimal performance \n", "bullet"),
+
                     ("Version 2.4.1 QOL Update\n", "h2"),
-                    ("• Updated GUI to the Azure TTK theme, thank you to rdbende! \n", "bullet"),
-                    ("• Source : https://github.com/rdbende/Azure-ttk-theme\n", "bullet"),
                     ("• Upgraded Performance to the input polling by utilizing multi-threading : Moved poll_inputs() into its own dedicated thread. \n", "bullet"),
-                    ("• Added an input previewer for buttons, keyboard presses, axis, and D-pads when\n", "bullet"),
+                    ("• Added an input previewer for buttons, keyboard presses, axis, and D-pads when the user presses the button, the corresponding UI should glow\n", "bullet"),
                     ("• Added a dark / light mode switch in the settings tab.\n", "bullet"),
+                    ("• Updated axes UI, added ability to change curve and individual axis smoothing \n", "bullet"),
+                    ("• Added ability to capture multiple devices at a time, it acts a little strangely but the idea is you'll have multiple *different* devices, not multiple controllers. Although, you can capture multiple controllers at a time. \n", "bullet"),
+
 
                     ("Version 2.4.0 Update Log\n", "h2"),
                     ("• Added customizable OSC address routing per axis, button, and hat.\n", "bullet"),
@@ -1022,7 +1236,6 @@ class OscWheelApp:
 
         help_text.config(state="disabled")
 
-    # --- Profile Management Functions ---
     def new_profile(self):
         name = simpledialog.askstring("New Profile", "Enter new profile name:")
         if name:
@@ -1046,11 +1259,14 @@ class OscWheelApp:
             self.apply_profile("Default")
             self.save_config()
 
-    def on_profile_selected(self, event=None):
+    def on_profile_selected(self, value=None):
         self.apply_profile(self.current_profile_name.get())
 
     def update_profile_combo(self):
-        self.profile_combo['values'] = list(self.profiles.keys())
+        menu = self.profile_combo["menu"]
+        menu.delete(0, "end")
+        for p in self.profiles.keys():
+            menu.add_command(label=p, command=tk._setit(self.current_profile_name, p, self.on_profile_selected))
         
     def save_current_profile_to_dict(self):
         config_data = {
@@ -1077,7 +1293,9 @@ class OscWheelApp:
                 "custom_addr": config['addr_var'].get(),
                 "inverted": config['inv_var'].get(),
                 "sensitivity": config['sens_var'].get(),
-                "deadzone": config['dead_var'].get()
+                "deadzone": config['dead_var'].get(),
+                "curve": config['curve_var'].get(),
+                "smooth": config['smooth_var'].get()
             }
             
         for idx, var in self.button_vars.items():
@@ -1128,13 +1346,17 @@ class OscWheelApp:
             for idx_str, data in config_data["axes"].items():
                 idx = int(idx_str)
                 if idx not in self.axis_config:
+                    name_var = tk.StringVar(value=f"Axis {idx}")
+                    name_var.trace_add("write", self._update_preview_labels)
                     self.axis_config[idx] = {
                         'name_var': tk.StringVar(value=f"Axis {idx}"),
                         'id_var': tk.StringVar(value=str(idx)),
                         'addr_var': tk.StringVar(value=""),
                         'inv_var': tk.BooleanVar(value=False),
                         'sens_var': tk.DoubleVar(value=1.0),
-                        'dead_var': tk.DoubleVar(value=0.0)
+                        'dead_var': tk.DoubleVar(value=0.0),
+                        'curve_var': tk.DoubleVar(value=1.0),
+                        'smooth_var': tk.DoubleVar(value=0.0)
                     }
                 self.axis_config[idx]['name_var'].set(data.get("custom_name", f"Axis {idx}"))
                 self.axis_config[idx]['id_var'].set(data.get("osc_id", str(idx)))
@@ -1142,6 +1364,8 @@ class OscWheelApp:
                 self.axis_config[idx]['inv_var'].set(data.get("inverted", False))
                 self.axis_config[idx]['sens_var'].set(data.get("sensitivity", 1.0))
                 self.axis_config[idx]['dead_var'].set(data.get("deadzone", 0.0))
+                self.axis_config[idx]['curve_var'].set(data.get("curve", 1.0))
+                self.axis_config[idx]['smooth_var'].set(data.get("smooth", 0.0))
 
         if "buttons" in config_data:
             for idx_str, value in config_data["buttons"].items():
@@ -1181,45 +1405,57 @@ class OscWheelApp:
                     self.keyboard_vars[idx]['addr'].set(value.get('addr', ''))
                     self.keyboard_vars[idx]['id'].set(value.get('id', ''))
 
-    def _update_button_labels(self, name):
-        name_lower = name.lower()
-        
-        is_ps = any(x in name_lower for x in ["playstation", "dualshock", "dualsense", "ps4", "ps5"])
-        is_nintendo = any(x in name_lower for x in ["nintendo", "switch", "pro controller", "joy-con"])
-        is_xbox = any(x in name_lower for x in ["xbox", "xinput"])
-        is_g29 = any(x in name_lower for x in ["g29", "g920", "g923"])
-        
-        # Read profile custom names to not overwrite them
+    def _update_button_labels(self):
         profile_data = self.profiles.get(self.current_profile_name.get(), {})
         custom_btn_names = profile_data.get("button_names", {})
 
         self.current_button_map.clear()
         
-        for i in range(24):
-            # Only use auto-detection if the user hasn't saved a custom name
-            if str(i) in custom_btn_names and custom_btn_names[str(i)].strip():
-                btn_name = custom_btn_names[str(i)]
-            else:
-                if is_ps:
-                    map_dict = {0: "Cross / A", 1: "Circle / B", 2: "Square / X", 3: "Triangle / Y", 4: "Share", 5: "Playstation Button", 6: "Options", 7: "L Thumbstick Button", 8: "R Thumbstick Button", 9: "L1", 10: "R1", 11: "D-pad UP", 12: "D-pad DOWN", 13:"D-pad LEFT", 14: "D-pad RIGHT", 15: "Pad"}
-                    btn_name = map_dict.get(i, f"Btn {i}")
-                elif is_nintendo:
-                    map_dict = {0: "B", 1: "A", 2: "Y", 3: "X", 4: "L", 5: "R", 6: "ZL", 7: "ZR", 8: "Minus", 9: "Plus", 10: "L3", 11: "R3", 12: "Home", 13: "Capture"}
-                    btn_name = map_dict.get(i, f"Btn {i}")
-                elif is_g29:
-                    map_dict = {0: "Cross", 1: "Square", 2: "Circle", 3: "Triangle", 4: "R-Paddle", 5: "L-Paddle", 6: "Options", 7: "Share", 8: "RSB", 9: "LSB", 10: "Center Logo Button", 11: "L3", 12: "Gear 1", 13: "Gear 2", 14: "Gear 3", 15: "Gear 4", 16: "Gear 5", 17: "Gear 6", 18: "Gear R", 19: "Plus", 20: "Minus", 21: "Dial R", 22: "Dial L", 23: "Enter"}
-                    btn_name = map_dict.get(i, f"Btn {i}")
-                elif is_xbox or "controller" in name_lower or "gamepad" in name_lower:
-                    map_dict = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB", 6: "Back", 7: "Start", 8: "LS", 9: "RS", 10: "Guide"}
-                    btn_name = map_dict.get(i, f"Btn {i}")
+        total_buttons = max(24, sum(d['num_buttons'] for d in self.active_joysticks))
+        
+        if not self.active_joysticks:
+            for i in range(total_buttons):
+                if str(i) in custom_btn_names and custom_btn_names[str(i)].strip():
+                    btn_name = custom_btn_names[str(i)]
                 else:
                     btn_name = f"Btn {i}"
-                
-            self.current_button_map[i] = btn_name
+                self.current_button_map[i] = btn_name
+                if i in self.button_name_vars:
+                    self.button_name_vars[i].set(btn_name)
+            return
             
-            # Apply to GUI text variables
-            if i in self.button_name_vars:
-                self.button_name_vars[i].set(btn_name)
+        for d in self.active_joysticks:
+            name_lower = d['name']
+            is_ps = any(x in name_lower for x in ["playstation", "dualshock", "dualsense", "ps4", "ps5"])
+            is_nintendo = any(x in name_lower for x in ["nintendo", "switch", "pro controller", "joy-con"])
+            is_xbox = any(x in name_lower for x in ["xbox", "xinput"])
+            is_g29 = any(x in name_lower for x in ["g29", "g920", "g923"])
+            
+            for i in range(d['num_buttons']):
+                global_i = d['btn_off'] + i
+                
+                if str(global_i) in custom_btn_names and custom_btn_names[str(global_i)].strip():
+                    btn_name = custom_btn_names[str(global_i)]
+                else:
+                    if is_ps:
+                        map_dict = {0: "Cross / A", 1: "Circle / B", 2: "Square / X", 3: "Triangle / Y", 4: "Share", 5: "Playstation Button", 6: "Options", 7: "L Thumbstick Button", 8: "R Thumbstick Button", 9: "L1", 10: "R1", 11: "D-pad UP", 12: "D-pad DOWN", 13:"D-pad LEFT", 14: "D-pad RIGHT", 15: "Pad"}
+                        btn_name = map_dict.get(i, f"Btn {i}")
+                    elif is_nintendo:
+                        map_dict = {0: "B", 1: "A", 2: "Y", 3: "X", 4: "L", 5: "R", 6: "ZL", 7: "ZR", 8: "Minus", 9: "Plus", 10: "L3", 11: "R3", 12: "Home", 13: "Capture"}
+                        btn_name = map_dict.get(i, f"Btn {i}")
+                    elif is_g29:
+                        map_dict = {0: "Cross", 1: "Square", 2: "Circle", 3: "Triangle", 4: "R-Paddle", 5: "L-Paddle", 6: "Options", 7: "Share", 8: "RSB", 9: "LSB", 10: "Center Logo Button", 11: "L3", 12: "Gear 1", 13: "Gear 2", 14: "Gear 3", 15: "Gear 4", 16: "Gear 5", 17: "Gear 6", 18: "Gear R", 19: "Plus", 20: "Minus", 21: "Dial R", 22: "Dial L", 23: "Enter"}
+                        btn_name = map_dict.get(i, f"Btn {i}")
+                    elif is_xbox or "controller" in name_lower or "gamepad" in name_lower:
+                        map_dict = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB", 6: "Back", 7: "Start", 8: "LS", 9: "RS", 10: "Guide"}
+                        btn_name = map_dict.get(i, f"Btn {i}")
+                    else:
+                        btn_name = f"Btn {i}"
+                    
+                self.current_button_map[global_i] = btn_name
+                
+                if global_i in self.button_name_vars:
+                    self.button_name_vars[global_i].set(btn_name)
 
     def refresh_devices(self):
         self._close_devices()
@@ -1233,11 +1469,16 @@ class OscWheelApp:
         self.devices_map = {} 
         
         if joystick_count == 0:
-            self.device_dropdown['values'] = ["No devices found"]
-            self.device_dropdown.current(0)
-            self._populate_axes_frame(0)
-            self._populate_preview_frame(0)
-            self._update_button_labels("none") 
+            menu = self.device_dropdown["menu"]
+            menu.delete(0, "end")
+            self.device_var.set("No devices found")
+            menu.add_command(label="No devices found", command=tk._setit(self.device_var, "No devices found"))
+            
+            self._populate_axes_frame()
+            self._populate_buttons_frame()
+            self._populate_hats_frame()
+            self._populate_preview_frame()
+            self._update_button_labels() 
             self.ffb_frame.pack_forget() 
         else:
             dropdown_values = []
@@ -1248,91 +1489,138 @@ class OscWheelApp:
                 self.devices_map[display_name] = i
                 dropdown_values.append(display_name)
                 
-            self.device_dropdown['values'] = dropdown_values
-            self.device_dropdown.current(0)
-            self.on_device_selected()
+            menu = self.device_dropdown["menu"]
+            menu.delete(0, "end")
+            for val in dropdown_values:
+                menu.add_command(label=val, command=tk._setit(self.device_var, val))
+            self.device_var.set(dropdown_values[0])
 
     def _close_devices(self):
-        if self.haptic:
-            sdl2.SDL_HapticClose(self.haptic)
-            self.haptic = None
-            self.spring_id = None
-            self.damper_id = None
-            self.friction_id = None
-            
-        if self.joystick:
-            sdl2.SDL_JoystickClose(self.joystick)
-            self.joystick = None
+        for d in self.active_joysticks:
+            if d['haptic']:
+                sdl2.SDL_HapticClose(d['haptic'])
+            if d['joy']:
+                sdl2.SDL_JoystickClose(d['joy'])
+                
+        self.active_joysticks.clear()
+        self.joystick = None
+        self.haptic = None
+        self.spring_id = None
+        self.damper_id = None
+        self.friction_id = None
+        self.is_wheel = False
 
-    def on_device_selected(self, event=None):
+    def clear_devices(self):
+        self._close_devices()
+        self._populate_axes_frame()
+        self._populate_buttons_frame()
+        self._populate_hats_frame()
+        self._populate_preview_frame()
+        self._update_button_labels()
+        self.ffb_frame.pack_forget()
+
+    def add_device(self):
         selected_device_str = self.device_var.get()
         if selected_device_str == "No devices found" or not selected_device_str:
             return
             
         device_index = self.devices_map.get(selected_device_str)
         if device_index is not None:
-            self._close_devices()
+            if any(d['index'] == device_index for d in self.active_joysticks):
+                return
 
-            self.joystick = sdl2.SDL_JoystickOpen(device_index)
-            num_axes = sdl2.SDL_JoystickNumAxes(self.joystick)
+            joy = sdl2.SDL_JoystickOpen(device_index)
+            if not joy: return
             
-            joy_type = sdl2.SDL_JoystickGetType(self.joystick)
-            is_type_wheel = (joy_type == sdl2.SDL_JOYSTICK_TYPE_WHEEL)
+            num_axes = sdl2.SDL_JoystickNumAxes(joy)
+            num_buttons = sdl2.SDL_JoystickNumButtons(joy)
+            num_hats = sdl2.SDL_JoystickNumHats(joy)
             
-            name = sdl2.SDL_JoystickName(self.joystick).decode('utf-8', errors='ignore').lower()
+            joy_type = sdl2.SDL_JoystickGetType(joy)
+            name = sdl2.SDL_JoystickName(joy).decode('utf-8', errors='ignore').lower()
+            
             wheel_keywords = ['wheel', 'racing', 'g29', 'g920', 'thrustmaster', 'fanatec', 'moza']
             is_string_wheel = any(kw in name for kw in wheel_keywords)
             
-            self.is_wheel = is_type_wheel or is_string_wheel
+            if (joy_type == sdl2.SDL_JOYSTICK_TYPE_WHEEL) or is_string_wheel:
+                self.is_wheel = True
 
-            # Execute dynamic labels
-            self._update_button_labels(name)
-
-            self.haptic = sdl2.SDL_HapticOpenFromJoystick(self.joystick)
+            haptic = sdl2.SDL_HapticOpenFromJoystick(joy)
+            spring_id = damper_id = friction_id = None
+            spring_effect = damper_effect = friction_effect = None
             has_ffb = False
             
-            if self.haptic:
-                sdl2.SDL_HapticSetAutocenter(self.haptic, 0) 
-                sdl2.SDL_HapticSetGain(self.haptic, 100)      
+            if haptic:
+                sdl2.SDL_HapticSetAutocenter(haptic, 0) 
+                sdl2.SDL_HapticSetGain(haptic, 100)      
 
-                features = sdl2.SDL_HapticQuery(self.haptic)
+                features = sdl2.SDL_HapticQuery(haptic)
                 
                 if features & sdl2.SDL_HAPTIC_SPRING:
-                    self.spring_effect = sdl2.SDL_HapticEffect()
-                    self.spring_effect.type = sdl2.SDL_HAPTIC_SPRING
-                    self.spring_effect.condition.length = sdl2.SDL_HAPTIC_INFINITY
-                    self.spring_id = sdl2.SDL_HapticNewEffect(self.haptic, self.spring_effect)
-                    sdl2.SDL_HapticRunEffect(self.haptic, self.spring_id, sdl2.SDL_HAPTIC_INFINITY)
+                    spring_effect = sdl2.SDL_HapticEffect()
+                    spring_effect.type = sdl2.SDL_HAPTIC_SPRING
+                    spring_effect.condition.length = sdl2.SDL_HAPTIC_INFINITY
+                    spring_id = sdl2.SDL_HapticNewEffect(haptic, spring_effect)
+                    sdl2.SDL_HapticRunEffect(haptic, spring_id, sdl2.SDL_HAPTIC_INFINITY)
                     has_ffb = True
                     
                 if features & sdl2.SDL_HAPTIC_DAMPER:
-                    self.damper_effect = sdl2.SDL_HapticEffect()
-                    self.damper_effect.type = sdl2.SDL_HAPTIC_DAMPER
-                    self.damper_effect.condition.length = sdl2.SDL_HAPTIC_INFINITY
-                    self.damper_id = sdl2.SDL_HapticNewEffect(self.haptic, self.damper_effect)
-                    sdl2.SDL_HapticRunEffect(self.haptic, self.damper_id, sdl2.SDL_HAPTIC_INFINITY)
+                    damper_effect = sdl2.SDL_HapticEffect()
+                    damper_effect.type = sdl2.SDL_HAPTIC_DAMPER
+                    damper_effect.condition.length = sdl2.SDL_HAPTIC_INFINITY
+                    damper_id = sdl2.SDL_HapticNewEffect(haptic, damper_effect)
+                    sdl2.SDL_HapticRunEffect(haptic, damper_id, sdl2.SDL_HAPTIC_INFINITY)
                     has_ffb = True
                     
                 if features & sdl2.SDL_HAPTIC_FRICTION:
-                    self.friction_effect = sdl2.SDL_HapticEffect()
-                    self.friction_effect.type = sdl2.SDL_HAPTIC_FRICTION
-                    self.friction_effect.condition.length = sdl2.SDL_HAPTIC_INFINITY
-                    self.friction_id = sdl2.SDL_HapticNewEffect(self.haptic, self.friction_effect)
-                    sdl2.SDL_HapticRunEffect(self.haptic, self.friction_id, sdl2.SDL_HAPTIC_INFINITY)
+                    friction_effect = sdl2.SDL_HapticEffect()
+                    friction_effect.type = sdl2.SDL_HAPTIC_FRICTION
+                    friction_effect.condition.length = sdl2.SDL_HAPTIC_INFINITY
+                    friction_id = sdl2.SDL_HapticNewEffect(haptic, friction_effect)
+                    sdl2.SDL_HapticRunEffect(haptic, friction_id, sdl2.SDL_HAPTIC_INFINITY)
                     has_ffb = True
                 
-                self.update_ffb()
-                
-            if self.is_wheel and has_ffb:
+            ax_off = sum(d['num_axes'] for d in self.active_joysticks)
+            btn_off = sum(d['num_buttons'] for d in self.active_joysticks)
+            hat_off = sum(d['num_hats'] for d in self.active_joysticks)
+
+            self.active_joysticks.append({
+                'index': device_index,
+                'joy': joy,
+                'haptic': haptic,
+                'name': name,
+                'num_axes': num_axes,
+                'num_buttons': num_buttons,
+                'num_hats': num_hats,
+                'ax_off': ax_off,
+                'btn_off': btn_off,
+                'hat_off': hat_off,
+                'spring_id': spring_id,
+                'spring_effect': spring_effect,
+                'damper_id': damper_id,
+                'damper_effect': damper_effect,
+                'friction_id': friction_id,
+                'friction_effect': friction_effect,
+                'has_ffb': has_ffb
+            })
+
+            self.joystick = self.active_joysticks[0]['joy']
+
+            self.update_ffb()
+            if any(d['has_ffb'] for d in self.active_joysticks):
                 self.ffb_frame.pack(fill="x", padx=10, pady=5, before=self.preview_frame)
             else:
                 self.ffb_frame.pack_forget()
             
-            self._populate_axes_frame(num_axes)
-            self._populate_preview_frame(num_axes)
+            self._populate_axes_frame()
+            self._populate_buttons_frame()
+            self._populate_hats_frame()
+            
+            self._populate_preview_frame()
+            self._update_button_labels()
 
-    def _apply_condition_effect(self, effect_id, effect_struct, strength_var):
-        if self.haptic and effect_id is not None and effect_struct:
+    def _apply_condition_effect(self, haptic, effect_id, effect_struct, strength_var):
+        if haptic and effect_id is not None and effect_struct:
             strength_pct = strength_var.get() / 100.0
             coeff = int(strength_pct * 32767)
             
@@ -1343,12 +1631,13 @@ class OscWheelApp:
             effect_struct.condition.deadband[0] = 0
             effect_struct.condition.center[0] = 0
             
-            sdl2.SDL_HapticUpdateEffect(self.haptic, effect_id, effect_struct)
+            sdl2.SDL_HapticUpdateEffect(haptic, effect_id, effect_struct)
 
     def update_ffb(self, *args):
-        self._apply_condition_effect(self.spring_id, self.spring_effect, self.ffb_spring_var)
-        self._apply_condition_effect(self.damper_id, self.damper_effect, self.ffb_damper_var)
-        self._apply_condition_effect(self.friction_id, self.friction_effect, self.ffb_friction_var)
+        for d in self.active_joysticks:
+            self._apply_condition_effect(d['haptic'], d['spring_id'], d['spring_effect'], self.ffb_spring_var)
+            self._apply_condition_effect(d['haptic'], d['damper_id'], d['damper_effect'], self.ffb_damper_var)
+            self._apply_condition_effect(d['haptic'], d['friction_id'], d['friction_effect'], self.ffb_friction_var)
 
     def save_config(self):
         self.save_current_profile_to_dict()
@@ -1361,10 +1650,8 @@ class OscWheelApp:
         try:
             with open(self.config_file, 'w') as f:
                 json.dump(full_data, f, indent=4)
-            # Use the theme's Accent style for the "Saved" state
-            self.save_btn.config(text="Saved!", style="Accent.TButton")
-            # Revert back to the standard button style after 1.5 seconds
-            self.root.after(1500, lambda: self.save_btn.config(text="Save Settings", style="TButton"))
+            self.save_btn.config(text="Saved!")
+            self.root.after(1500, lambda: self.save_btn.config(text="Save Settings"))
         except Exception as e:
             print(f"Error saving config: {e}")
 
@@ -1408,6 +1695,8 @@ class OscWheelApp:
                 config['inv_var'].set(False)
                 config['sens_var'].set(1.0)
                 config['dead_var'].set(0.0)
+                config['curve_var'].set(1.0)
+                config['smooth_var'].set(0.0)
             
             for i, var in self.button_vars.items():
                 var.set(str(i))
@@ -1433,8 +1722,7 @@ class OscWheelApp:
                         if "custom_name" in ax_data:
                             del ax_data["custom_name"]
             
-            name = sdl2.SDL_JoystickName(self.joystick).decode('utf-8', errors='ignore') if self.joystick else "Unknown"
-            self._update_button_labels(name)
+            self._update_button_labels()
 
     def get_axis_value(self, index, raw_value):
         if index in self.axis_config:
@@ -1442,6 +1730,8 @@ class OscWheelApp:
             is_inverted = config['inv_var'].get()
             sensitivity = config['sens_var'].get()
             deadzone = config['dead_var'].get()
+            curve = config['curve_var'].get()
+            smooth = config['smooth_var'].get()
             
             if abs(raw_value) < deadzone:
                 val = 0.0
@@ -1451,13 +1741,24 @@ class OscWheelApp:
                     val = 0.0
                 else:
                     val = sign * ((abs(raw_value) - deadzone) / (1.0 - deadzone))
-            
+
+            val_sign = 1 if val >= 0 else -1
+            val = val_sign * (abs(val) ** curve)
+
             val = val * sensitivity
+            
             if is_inverted:
                 val = -val
             
             val = max(-1.0, min(1.0, val))
-            return round(val, 3)
+
+            if index not in self.axis_ema:
+                self.axis_ema[index] = val
+            else:
+                alpha = 1.0 - smooth 
+                self.axis_ema[index] = (alpha * val) + ((1.0 - alpha) * self.axis_ema[index])
+
+            return round(self.axis_ema[index], 3)
         return raw_value
         
     def get_axis_id(self, raw_index):
@@ -1507,7 +1808,10 @@ class OscWheelApp:
         self.log_area.config(state='normal')
         self.log_area.delete(1.0, tk.END)
         
-        name = sdl2.SDL_JoystickName(self.joystick).decode('utf-8', errors='ignore') if self.joystick else "Unknown"
+        name = self.active_joysticks[0]['name'].title() if self.active_joysticks else "Keyboard Only"
+        if len(self.active_joysticks) > 1:
+            name = f"{name} (+{len(self.active_joysticks)-1} more)"
+            
         header = f"--- STREAMING ACTIVE ---\n"
         header += f"Device: {name}\n"
         header += f"Target Output: {self.ip_entry.get()}:{self.port_entry.get()} | Base Addr: {self.osc_address}\n"
@@ -1557,25 +1861,19 @@ class OscWheelApp:
             messagebox.showerror("Invalid Input", "Port must be an integer.")
             return
 
-        selected_device_str = self.device_var.get()
-        has_device = selected_device_str and selected_device_str != "No devices found"
+        has_devices = len(self.active_joysticks) > 0
         has_keys = any(v['key'].get().strip() for v in self.keyboard_vars.values()) if KEYBOARD_AVAILABLE else False
 
-        if not has_device and not has_keys:
-            messagebox.showerror("Device Error", "No controller or keyboard mappings found.")
+        if not has_devices and not has_keys:
+            messagebox.showerror("Device Error", "No controller added to pool or keyboard mappings found.")
             return
-
-        if has_device and not self.joystick:
-            self.on_device_selected()
 
         if self.ui_icon_on:
             self.status_icon_label.config(image=self.ui_icon_on)
 
-        # OSC Out Client
         self.client = udp_client.SimpleUDPClient(ip, port)
         self.osc_address = osc_address
         
-        # OSC IN Server (Remote FFB Control)
         try:
             listen_port = int(self.listen_port_entry.get().strip())
             disp = dispatcher.Dispatcher()
@@ -1593,7 +1891,7 @@ class OscWheelApp:
             return
 
         self.is_running = True
-        self.start_btn.config(text="Stop Streaming", style="TButton") # Reverts to a standard button
+        self.start_btn.config(text="Stop Streaming", bg="#dc3545", activebackground="#c82333")
         
         self.setting_widgets = [w for w in self.setting_widgets if w.winfo_exists()]
         for widget in self.setting_widgets:
@@ -1604,10 +1902,13 @@ class OscWheelApp:
         if self.tray_icon and self.img_on:
             self.tray_icon.icon = self.img_on
         
-        name = sdl2.SDL_JoystickName(self.joystick).decode('utf-8', errors='ignore') if self.joystick else "Keyboard Only"
+        name = self.active_joysticks[0]['name'].title() if self.active_joysticks else "Keyboard Only"
+        if len(self.active_joysticks) > 1:
+            name = f"{name} (+{len(self.active_joysticks)-1} more)"
+            
         if self.output_mode.get() == "scroll":
             self.log(f"--- STARTED STREAMING ---")
-            self.log(f"Device: {name}")
+            self.log(f"Device(s): {name}")
             self.log(f"Sending to: {ip}:{port} | Base Address: {osc_address}")
             self.log(f"Listening for FFB on port: {listen_port}")
             self.log(f"-------------------------")
@@ -1618,16 +1919,13 @@ class OscWheelApp:
         self.prev_buttons.clear()
         self.prev_hats.clear()
         self.prev_keys.clear()
+        self.axis_ema.clear()
 
-        # Start the dedicated hardware polling thread
-        self.polling_thread = threading.Thread(target=self._polling_loop, daemon=True)
-        self.polling_thread.start()
+        self._main_polling_loop()
+        self._ui_log_loop()
 
     def stop_streaming(self):
         self.is_running = False
-
-        if hasattr(self, 'polling_thread') and self.polling_thread.is_alive():
-            self.polling_thread.join(timeout=1.0)
 
         if self.update_job:
             self.root.after_cancel(self.update_job)
@@ -1641,8 +1939,9 @@ class OscWheelApp:
                 pass
             self.server = None
             
-        self.start_btn.config(text="Start Streaming", style="Accent.TButton")
-
+        self.start_btn.config(text="Start Streaming")
+        self.start_btn.config(text="Start Streaming", bg="#28a745", activebackground="#218838")
+        
         if self.ui_icon_off:
             self.status_icon_label.config(image=self.ui_icon_off)
         
@@ -1663,7 +1962,6 @@ class OscWheelApp:
             self.log_area.insert(tk.END, "--- STOPPED STREAMING ---\n")
             self.log_area.config(state='disabled')
 
-    # --- OSC Input Handlers ---
     def _osc_ffb_spring(self, address, *args):
         if args:
             try:
@@ -1709,7 +2007,6 @@ class OscWheelApp:
         if self.output_mode.get() == "scroll":
             self.log(f"OSC IN: /ffb/friction -> {val:.1f}")
 
-    # --- Joystick Polling ---
     def sdl_hat_to_tuple(self, hat_val):
         x, y = 0, 0
         if hat_val & sdl2.SDL_HAT_UP:
@@ -1722,85 +2019,82 @@ class OscWheelApp:
             x = -1
         return (x, y)
     
-    def _polling_loop(self):
-        """Dedicated thread for strictly gathering and broadcasting hardware data."""
-        while self.is_running:
-            self.poll_inputs()
-            # 0.01s sleep gives us a rock-solid ~100Hz polling rate without maxing out the CPU
-            time.sleep(0.01) 
-            
-            # Safely trigger UI updates back on the main thread if needed
+    def _ui_log_loop(self):
+        if self.is_running:
             if self.output_mode.get() == "inplace":
-                self.root.after_idle(self.redraw_in_place)
+                self.redraw_in_place()
+            # 100ms = 10 FPS UI updates
+            self.root.after(100, self._ui_log_loop)
+    
+    def _main_polling_loop(self):
+            if self.is_running:
+                self.poll_inputs()
+                # 10ms = 100Hz polling securely on the main thread
+                self.root.after(10, self._main_polling_loop)
 
     def poll_inputs(self):
         if not self.is_running:
             return
 
-        state_changed = False
-
-        if self.joystick:
+        if self.active_joysticks:
             sdl2.SDL_JoystickUpdate()
-            num_axes = sdl2.SDL_JoystickNumAxes(self.joystick)
-            num_buttons = sdl2.SDL_JoystickNumButtons(self.joystick)
-            num_hats = sdl2.SDL_JoystickNumHats(self.joystick)
-
-            for i in range(num_axes):
-                raw_axis_val = round(sdl2.SDL_JoystickGetAxis(self.joystick, i) / 32767.0, 3)
-                if self.prev_axes.get(i) != raw_axis_val:
-                    # Only flash if the axis moved significantly (ignores micro-jitters)
-                    if abs(self.prev_axes.get(i, 0) - raw_axis_val) > 0.05:
-                        self.root.after(0, self._flash_widget, 'axes', i)
-
-                    self.prev_axes[i] = raw_axis_val
-                    
-                    final_val = self.get_axis_value(i, raw_axis_val)
-                    mapped_axis_id = self.get_axis_id(i)
-                    addr = self.axis_config[i]['addr_var'].get().strip() or self.osc_address
-                    msg_args = ["axis", mapped_axis_id, final_val]
-                    
-                    self.client.send_message(addr, msg_args)
-                    if self.output_mode.get() == "scroll":
-                        self.log(f"{addr} {msg_args}")
-                    
-                    state_changed = True
-
-            for i in range(num_buttons):
-                raw_btn_val = sdl2.SDL_JoystickGetButton(self.joystick, i)
-                if self.prev_buttons.get(i) != raw_btn_val:
-                    # Only flash on button PRESS (not release)
-                    if raw_btn_val == 1:
-                        self.root.after(0, self._flash_widget, 'buttons', i)
-                    self.prev_buttons[i] = raw_btn_val
-                    
-                    mapped_id = self.get_button_id(i)
-                    addr = self.button_addr_vars[i].get().strip() or self.osc_address
-                    msg_args = ["button", mapped_id, raw_btn_val]
-                    
-                    self.client.send_message(addr, msg_args)
-                    if self.output_mode.get() == "scroll":
-                        self.log(f"{addr} {msg_args}")
-                    
-                    state_changed = True
-
-            for i in range(num_hats):
-                hat_bitmask = sdl2.SDL_JoystickGetHat(self.joystick, i)
-                hat_tuple = self.sdl_hat_to_tuple(hat_bitmask)
+            
+            for d in self.active_joysticks:
+                joy = d['joy']
+                ax_off = d['ax_off']
+                btn_off = d['btn_off']
+                hat_off = d['hat_off']
                 
-                if self.prev_hats.get(i) != hat_tuple:
-                    # Only flash if a direction is pressed
-                    if hat_tuple != (0, 0):
-                        self.root.after(0, self._flash_widget, 'hats', i)
-                    mapped_id = self.get_hat_id(i)
-                    addr = self.hat_addr_vars[i].get().strip() or self.osc_address
-                    msg_args = ["hat", mapped_id, hat_tuple[0], hat_tuple[1]]
+                num_axes = d['num_axes']
+                num_buttons = d['num_buttons']
+                num_hats = d['num_hats']
+
+                for i in range(num_axes):
+                    global_i = ax_off + i
+                    raw_axis_val = round(sdl2.SDL_JoystickGetAxis(joy, i) / 32767.0, 3)
                     
-                    self.client.send_message(addr, msg_args)
-                    if self.output_mode.get() == "scroll":
-                        self.log(f"{addr} {msg_args}")
+                    if self.prev_axes.get(global_i) != raw_axis_val:
+                        self.prev_axes[global_i] = raw_axis_val
+                        
+                        final_val = self.get_axis_value(global_i, raw_axis_val)
+                        mapped_axis_id = self.get_axis_id(global_i)
+                        addr = self.axis_config[global_i]['addr_var'].get().strip() or self.osc_address
+                        msg_args = ["axis", mapped_axis_id, final_val]
+                        
+                        self.client.send_message(addr, msg_args)
+                        if self.output_mode.get() == "scroll":
+                            self.log(f"{addr} {msg_args}")
+
+                for i in range(num_buttons):
+                    global_i = btn_off + i
+                    raw_btn_val = sdl2.SDL_JoystickGetButton(joy, i)
                     
-                    self.prev_hats[i] = hat_tuple
-                    state_changed = True
+                    if self.prev_buttons.get(global_i) != raw_btn_val:
+                        self.prev_buttons[global_i] = raw_btn_val
+                        
+                        mapped_id = self.get_button_id(global_i)
+                        addr = self.button_addr_vars[global_i].get().strip() or self.osc_address
+                        msg_args = ["button", mapped_id, raw_btn_val]
+                        
+                        self.client.send_message(addr, msg_args)
+                        if self.output_mode.get() == "scroll":
+                            self.log(f"{addr} {msg_args}")
+
+                for i in range(num_hats):
+                    global_i = hat_off + i
+                    hat_bitmask = sdl2.SDL_JoystickGetHat(joy, i)
+                    hat_tuple = self.sdl_hat_to_tuple(hat_bitmask)
+                    
+                    if self.prev_hats.get(global_i) != hat_tuple:
+                        mapped_id = self.get_hat_id(global_i)
+                        addr = self.hat_addr_vars[global_i].get().strip() or self.osc_address
+                        msg_args = ["hat", mapped_id, hat_tuple[0], hat_tuple[1]]
+                        
+                        self.client.send_message(addr, msg_args)
+                        if self.output_mode.get() == "scroll":
+                            self.log(f"{addr} {msg_args}")
+                        
+                        self.prev_hats[global_i] = hat_tuple
 
         if KEYBOARD_AVAILABLE:
             for i, k_vars in self.keyboard_vars.items():
@@ -1813,9 +2107,6 @@ class OscWheelApp:
                         
                     val = 1 if is_pressed else 0
                     if self.prev_keys.get(i) != val:
-                        # Only flash on key PRESS (not release)
-                        if val == 1:
-                            self.root.after(0, self._flash_widget, 'keys', i)
                         self.prev_keys[i] = val
                         
                         addr = k_vars['addr'].get().strip() or self.osc_address
@@ -1831,13 +2122,6 @@ class OscWheelApp:
                         
                         if self.output_mode.get() == "scroll":
                             self.log(f"{addr} {msg_args} (Key: {k})")
-                            
-                        state_changed = True
-
-    ##    if state_changed and self.output_mode.get() == "inplace":
-    ##        self.redraw_in_place()
-
-     ##   self.update_job = self.root.after(10, self.poll_inputs)
 
     def on_closing(self, *args):
         self.root.after(0, self._shutdown)
@@ -1862,15 +2146,5 @@ if __name__ == "__main__":
         pass 
     
     root = tk.Tk()
-    
-    # Safely resolve the path for PyInstaller's temp folder
-    theme_path = resource_path("azure.tcl")
-    # Tcl requires forward slashes for paths, even on Windows
-    theme_path_tcl = theme_path.replace("\\", "/") 
-    
-    # Apply the Azure theme
-    root.tk.call("source", theme_path_tcl)
-    root.tk.call("set_theme", "light")
-    
     app = OscWheelApp(root)
     root.mainloop()
