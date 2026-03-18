@@ -25,6 +25,7 @@ public class MLWheelOSC : MonoBehaviour
     [Header("Objects")]
     public GameObject wheel;
     public GameObject colorchangeobject;
+    public GameObject CarObject;
 
     [Header("Wheel Visuals")]
     public float maxSteeringAngle = 180f;
@@ -43,10 +44,48 @@ public class MLWheelOSC : MonoBehaviour
     public float currentOSCGasValue = 0f;   //Exposes Axis 1 (Gas)
     public float currentOSCBrakeValue = 0f; //Exposes Axis 3 (Brake)
 
+    // --- Network Scanner Variables ---
+    private const string EVENT_SCAN = "ScanEvent";
+    private EventToken tokenScanEnvironment;
+
+    // --- Network Reset Variables ---
+    private const string EVENT_RESET_CAR = "ResetCarEvent";
+    private EventToken tokenResetCar;
+    private Vector3 initialCarPosition;
+    private Quaternion initialCarRotation;
+    private const string EVENT_UPRIGHT_CAR = "UprightCarEvent";
+    private EventToken tokenUprightCar;
+
     // --- State Dictionaries for the Dashboard ---
     private Dictionary<int, float> axisStates = new Dictionary<int, float>();
     private Dictionary<int, int> buttonStates = new Dictionary<int, int>();
     private Dictionary<int, string> hatStates = new Dictionary<int, string>();
+
+    public TextMeshPro Score;
+    private int currentScore = 0;
+
+    public ParticleSystem ScoredParticleSystem;
+
+    public GameObject terrainmanager_object;
+    private MarsTerrainManager terrainmanager_Script;
+
+    public CarDriver_CSharp car_scriptReference;
+    public void AddScore(int points)
+    {
+        currentScore += points;
+        UpdateScoreDisplay();
+        Log("Score increased by " + points + "!");
+    }
+
+    private void UpdateScoreDisplay()
+    {
+        if (Score != null)
+        {
+            ScoredParticleSystem.Play();
+            Score.text = "Score: " + currentScore;
+        }
+    }
+
 
     void Start()
     {
@@ -56,7 +95,83 @@ public class MLWheelOSC : MonoBehaviour
         if (colorchangeobject != null)
             colorRenderer = colorchangeobject.GetComponent<Renderer>();
 
+        // Store the original position of the car
+        if (CarObject != null)
+        {
+            initialCarPosition = CarObject.transform.position;
+            initialCarRotation = CarObject.transform.rotation;
+        }
+
+        // Register the synchronized network event
+        tokenResetCar = this.AddEventHandler(EVENT_RESET_CAR, OnCarResetNetwork);
+        tokenScanEnvironment = this.AddEventHandler(EVENT_SCAN, OnCarScanNetwork);
+
+        terrainmanager_Script = terrainmanager_object.GetComponent(typeof(MarsTerrainManager)) as MarsTerrainManager;
+        car_scriptReference = CarObject.GetComponent(typeof(CarDriver_CSharp)) as CarDriver_CSharp;
+        tokenUprightCar = this.AddEventHandler(EVENT_UPRIGHT_CAR, OnCarUprightNetwork);
+
         UpdateDashboard(); // Initial draw
+    }
+
+
+    private void OnCarUprightNetwork(object[] args)
+    {
+        if (CarObject != null)
+        {
+            // Reset the physical momentum so the car drops cleanly
+            Rigidbody carRb = CarObject.GetComponent<Rigidbody>();
+            if (carRb != null)
+            {
+                carRb.velocity = Vector3.zero;
+                carRb.angularVelocity = Vector3.zero;
+            }
+
+            // Keep the current X and Z, but boost the Y slightly and flatten the rotation
+            Vector3 currentPos = CarObject.transform.position;
+            currentPos.y += 2.0f; // Drop from 2 units above its current spot
+
+            // Flatten the rotation (Zero out X and Z roll/pitch, keep the Y yaw so it faces the same way)
+            Quaternion currentRot = CarObject.transform.rotation;
+            Vector3 eulerRotation = currentRot.eulerAngles;
+            Quaternion flatRotation = Quaternion.Euler(0, eulerRotation.y, 0);
+
+            CarObject.transform.position = currentPos;
+            CarObject.transform.rotation = flatRotation;
+
+            Log("Car uprighted in place.");
+        }
+    }
+
+
+    private void OnCarScanNetwork(object[] args)
+    {
+        Log("Car attempting to scan");
+        // Non-generic grab of the Terrain Manager to trigger the visual scan response
+        
+        if (terrainmanager_Script != null)
+        {
+            terrainmanager_Script.TriggerScan();
+        }
+    }
+
+    private void OnCarResetNetwork(object[] args)
+    {
+        if (CarObject != null)
+        {
+            // Reset the physical momentum so the car doesn't go flying after resetting
+            Rigidbody carRb = CarObject.GetComponent<Rigidbody>();
+            if (carRb != null)
+            {
+                carRb.velocity = Vector3.zero;
+                carRb.angularVelocity = Vector3.zero;
+            }
+
+            // Move the car back to the starting point
+            CarObject.transform.position = initialCarPosition;
+            CarObject.transform.rotation = initialCarRotation;
+
+            Log("Car reset to original position.");
+        }
     }
 
     public void Log(string msg)
@@ -125,9 +240,39 @@ public class MLWheelOSC : MonoBehaviour
             buttonStates[inputIndex] = isPressed; // Store in state dictionary
 
             // Only trigger visual change on button press (1)
+            /*
             if (isPressed == 1 && colorRenderer != null && inputIndex < buttonColors.Length)
             {
                 colorRenderer.material.color = buttonColors[inputIndex];
+            }
+            */
+
+            if (inputIndex == 16 && isPressed == 1)
+            {
+                Log("Reset button pressed. Broadcasting reset event...");
+                // Broadcast to all clients to reset the car
+                this.InvokeNetwork(EVENT_RESET_CAR, EventTarget.All, null);
+            }
+
+            if(inputIndex == 10 && isPressed == 1)
+            {
+                Log("Scanner button pressed. Broadcasting reset event...");
+                this.InvokeNetwork(EVENT_SCAN, EventTarget.All, null);
+            }
+
+            if (inputIndex == 0 && isPressed == 1)
+            {
+                Log("Skip Mars Fact button pressed. Broadcasting event...");
+                if(car_scriptReference.CurrentMarsFact != null)
+                {
+                   car_scriptReference.CurrentMarsFact.SetActive(false);
+                }
+            }
+
+            if (inputIndex == 1 && isPressed == 1)
+            {
+                Log("Upright button pressed. Broadcasting upright event...");
+                this.InvokeNetwork(EVENT_UPRIGHT_CAR, EventTarget.All, null);
             }
         }
 
