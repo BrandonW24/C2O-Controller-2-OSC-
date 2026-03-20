@@ -17,6 +17,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Text.Json;
 using System.IO;
+using System.Text;
 
 namespace C2O
 {
@@ -33,10 +34,33 @@ namespace C2O
         public string Port { get; set; } = "4041";
         public string ListenPort { get; set; } = "4042";
         public string BaseAddress { get; set; } = "/wheel/input";
+        
+        // FFB Configs
+        public float FfbGain { get; set; } = 1.0f;
+        
+        // Motion configs
+        public bool MotionEnabled { get; set; } = false;
+        public string MotionIp { get; set; } = "127.0.0.1";
+        public string MotionPort { get; set; } = "20777";
+        public string MotionProtocol { get; set; } = "Raw OSC";
+        
+        public bool SafetyEnabled { get; set; } = true;
+        public int SafetyTimeoutMs { get; set; } = 500;
+
+        public Dictionary<string, MotionAxisConfig> MotionAxes { get; set; } = new Dictionary<string, MotionAxisConfig>();
+
         public Dictionary<int, AxisConfig> Axes { get; set; } = new Dictionary<int, AxisConfig>();
         public Dictionary<int, ButtonConfig> Buttons { get; set; } = new Dictionary<int, ButtonConfig>();
         public Dictionary<int, HatConfig> Hats { get; set; } = new Dictionary<int, HatConfig>();
         public Dictionary<int, KeyConfig> Keys { get; set; } = new Dictionary<int, KeyConfig>();
+    }
+
+    public class MotionAxisConfig
+    {
+        public float Gain { get; set; } = 1.0f;
+        public float Smooth { get; set; } = 0.0f;
+        public bool WashoutEnabled { get; set; } = false;
+        public float WashoutStrength { get; set; } = 0.99f;
     }
 
     public class AxisConfig
@@ -75,6 +99,12 @@ namespace C2O
     public class DeviceInfo
     {
         public IntPtr Joystick { get; set; }
+        public IntPtr Haptic { get; set; } 
+        
+        // Multi-Effect FFB Array Management
+        public Dictionary<ushort, int> EffectIds { get; set; } = new Dictionary<ushort, int>();
+        public bool IsRumbleInitialized { get; set; } = false;
+
         public string Name { get; set; } = "";
         public int NumAxes { get; set; }
         public int NumButtons { get; set; }
@@ -92,7 +122,9 @@ namespace C2O
         private bool _isRunning = false;
         private volatile bool _isScrollMode = true;
         private CancellationTokenSource? _pollingCancellationToken;
-        private UdpClient? _oscClient;
+        private UdpClient? _oscSender;
+        private UdpClient? _oscListener;
+        private UdpClient? _motionSender;
         private string _baseAddr = "";
 
         // Profile Management
@@ -102,13 +134,22 @@ namespace C2O
 
         private List<DeviceInfo> _activeDevices = new List<DeviceInfo>();
 
-        // Working Dictionaries (mapped directly to currently active profile)
+        // Working Dictionaries
         private Dictionary<int, AxisConfig> _axisConfigs = new Dictionary<int, AxisConfig>();
         private Dictionary<int, ButtonConfig> _buttonConfigs = new Dictionary<int, ButtonConfig>();
         private Dictionary<int, HatConfig> _hatConfigs = new Dictionary<int, HatConfig>();
         private Dictionary<int, KeyConfig> _keyConfigs = new Dictionary<int, KeyConfig>();
         
         private Dictionary<int, float> _axisEmaHistory = new Dictionary<int, float>();
+        
+        // Motion Management
+        private ConcurrentDictionary<string, float> _motionEmaHistory = new ConcurrentDictionary<string, float>();
+        private ConcurrentDictionary<string, float> _motionWashoutPrevInput = new ConcurrentDictionary<string, float>();
+        private ConcurrentDictionary<string, float> _motionWashoutPrevOutput = new ConcurrentDictionary<string, float>();
+        
+        private bool _motionKilled = false;
+        private DateTime _lastMotionReceiveTime = DateTime.UtcNow;
+        private bool _hasZeroedMotion = true; // Start true so we don't zero immediately on boot
 
         // Output and Previews
         private ConcurrentDictionary<int, float> _prevAxes = new ConcurrentDictionary<int, float>();
@@ -133,13 +174,22 @@ namespace C2O
         {
             InitializeComponent();
             LoadAppIcons();
+            
+            // Core FFB Slider Events
+            SliderFfbGain.ValueChanged += (s, e) => { TxtFfbGain.Text = e.NewValue.ToString("0.0"); };
+
+            // Custom FFB Test Tool Slider Events
+            SliderTestStrength.ValueChanged += (s, e) => { TxtTestStrength.Text = $"{e.NewValue} %"; };
+            SliderTestDuration.ValueChanged += (s, e) => { TxtTestDuration.Text = $"{e.NewValue} ms"; };
+            SliderTestPulses.ValueChanged += (s, e) => { TxtTestPulses.Text = $"{e.NewValue}"; };
+
             LoadConfig();
             
             SDL.SDL_Init(SDL.SDL_INIT_JOYSTICK | SDL.SDL_INIT_HAPTIC);
             RefreshDevices();
 
             _uiTimer = new DispatcherTimer();
-            _uiTimer.Interval = TimeSpan.FromMilliseconds(100); 
+            _uiTimer.Interval = TimeSpan.FromMilliseconds(50); 
             _uiTimer.Tick += UiTimer_Tick;
             _uiTimer.Start();
         }
@@ -152,7 +202,6 @@ namespace C2O
             {
                 var assembly = System.Reflection.Assembly.GetExecutingAssembly();
 
-                // Load ON icon securely from the binary stream
                 using (var streamOn = assembly.GetManifestResourceStream("C2O.steering-wheel-car_on.png"))
                 {
                     if (streamOn != null)
@@ -165,7 +214,6 @@ namespace C2O
                     }
                 }
 
-                // Load OFF icon securely from the binary stream
                 using (var streamOff = assembly.GetManifestResourceStream("C2O.steering-wheel-car_off.png"))
                 {
                     if (streamOff != null)
@@ -196,6 +244,7 @@ namespace C2O
             SaveConfig();
             foreach (var device in _activeDevices)
             {
+                if (device.Haptic != IntPtr.Zero) SDL.SDL_HapticClose(device.Haptic);
                 if (device.Joystick != IntPtr.Zero) SDL.SDL_JoystickClose(device.Joystick);
             }
             SDL.SDL_Quit();
@@ -251,6 +300,16 @@ namespace C2O
             prof.ListenPort = ListenPortEntry.Text;
             prof.BaseAddress = BaseAddrEntry.Text;
 
+            prof.FfbGain = (float)SliderFfbGain.Value;
+            prof.MotionEnabled = ChkMotionEnable.IsChecked == true;
+            prof.MotionIp = MotionIpEntry.Text;
+            prof.MotionPort = MotionPortEntry.Text;
+            prof.MotionProtocol = CmbMotionProtocol.Text;
+            
+            prof.SafetyEnabled = ChkSafetyEnable.IsChecked == true;
+            if (int.TryParse(TxtSafetyTimeout.Text, out int timeout)) prof.SafetyTimeoutMs = timeout;
+
+            // MotionAxes are synced directly via their event handlers in BuildMotionUI
             prof.Axes = _axisConfigs;
             prof.Buttons = _buttonConfigs;
             prof.Hats = _hatConfigs;
@@ -266,6 +325,19 @@ namespace C2O
             TargetPortEntry.Text = prof.Port;
             ListenPortEntry.Text = prof.ListenPort;
             BaseAddrEntry.Text = prof.BaseAddress;
+
+            SliderFfbGain.Value = prof.FfbGain;
+            TxtFfbGain.Text = prof.FfbGain.ToString("0.0");
+            
+            ChkMotionEnable.IsChecked = prof.MotionEnabled;
+            MotionIpEntry.Text = prof.MotionIp;
+            MotionPortEntry.Text = prof.MotionPort;
+            CmbMotionProtocol.Text = string.IsNullOrEmpty(prof.MotionProtocol) ? "Raw OSC" : prof.MotionProtocol;
+            
+            ChkSafetyEnable.IsChecked = prof.SafetyEnabled;
+            TxtSafetyTimeout.Text = prof.SafetyTimeoutMs.ToString();
+
+            if (prof.MotionAxes == null) prof.MotionAxes = new Dictionary<string, MotionAxisConfig>();
 
             _axisConfigs = prof.Axes ?? new Dictionary<int, AxisConfig>();
             _buttonConfigs = prof.Buttons ?? new Dictionary<int, ButtonConfig>();
@@ -325,7 +397,6 @@ namespace C2O
 
             SyncUIToProfile();
             
-            // Clone the current profile so the user doesn't start completely from scratch
             var cloneJson = JsonSerializer.Serialize(_appConfig.Profiles[_currentProfileName]);
             var clone = JsonSerializer.Deserialize<ProfileData>(cloneJson);
             
@@ -430,9 +501,66 @@ namespace C2O
                 BuildDeviceUI(dev);
             }
             BuildKeyboardUI();
+            BuildMotionUI();
         }
 
-        // --- Hardware Polling Logic ---
+        private void BuildMotionUI()
+        {
+            MotionAxesPanel.Children.Clear();
+            string[] axes = { "pitch", "roll", "yaw", "surge", "sway", "heave" };
+
+            var prof = _appConfig.Profiles[_currentProfileName];
+            if (prof.MotionAxes == null) prof.MotionAxes = new Dictionary<string, MotionAxisConfig>();
+
+            foreach (string axis in axes)
+            {
+                if (!prof.MotionAxes.ContainsKey(axis))
+                {
+                    prof.MotionAxes[axis] = new MotionAxisConfig();
+                }
+
+                var cfg = prof.MotionAxes[axis];
+
+                var rowPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+                
+                // Axis Label
+                rowPanel.Children.Add(new TextBlock { Text = axis.ToUpper(), Width = 60, Foreground = _labelColor, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center });
+
+                // Gain
+                rowPanel.Children.Add(new TextBlock { Text = "Gain:", Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 5, 0) });
+                var gainSlider = new Slider { Minimum = 0.1, Maximum = 5.0, Value = cfg.Gain, Width = 80, TickFrequency = 0.1, IsSnapToTickEnabled = true, VerticalAlignment = VerticalAlignment.Center };
+                var gainTxt = new TextBlock { Text = cfg.Gain.ToString("0.0"), Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(5, 0, 0, 0), Width = 30 };
+                gainSlider.ValueChanged += (s, e) => { cfg.Gain = (float)e.NewValue; gainTxt.Text = cfg.Gain.ToString("0.0"); };
+                rowPanel.Children.Add(gainSlider);
+                rowPanel.Children.Add(gainTxt);
+
+                // Smooth
+                rowPanel.Children.Add(new TextBlock { Text = "Smooth:", Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(15, 0, 5, 0) });
+                var smoothSlider = new Slider { Minimum = 0.0, Maximum = 0.99, Value = cfg.Smooth, Width = 80, TickFrequency = 0.01, IsSnapToTickEnabled = true, VerticalAlignment = VerticalAlignment.Center };
+                var smoothTxt = new TextBlock { Text = cfg.Smooth.ToString("0.00"), Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(5, 0, 0, 0), Width = 35 };
+                smoothSlider.ValueChanged += (s, e) => { cfg.Smooth = (float)e.NewValue; smoothTxt.Text = cfg.Smooth.ToString("0.00"); };
+                rowPanel.Children.Add(smoothSlider);
+                rowPanel.Children.Add(smoothTxt);
+
+                // Washout Enable
+                var washChk = new CheckBox { Content = "Washout", IsChecked = cfg.WashoutEnabled, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(20, 0, 5, 0) };
+                washChk.Checked += (s, e) => cfg.WashoutEnabled = true;
+                washChk.Unchecked += (s, e) => cfg.WashoutEnabled = false;
+                rowPanel.Children.Add(washChk);
+
+                // Washout Strength (Alpha)
+                rowPanel.Children.Add(new TextBlock { Text = "Strength:", Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 5, 0) });
+                var washSlider = new Slider { Minimum = 0.50, Maximum = 0.99, Value = cfg.WashoutStrength, Width = 80, TickFrequency = 0.01, IsSnapToTickEnabled = true, VerticalAlignment = VerticalAlignment.Center };
+                var washTxt = new TextBlock { Text = cfg.WashoutStrength.ToString("0.00"), Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(5, 0, 0, 0), Width = 35 };
+                washSlider.ValueChanged += (s, e) => { cfg.WashoutStrength = (float)e.NewValue; washTxt.Text = cfg.WashoutStrength.ToString("0.00"); };
+                rowPanel.Children.Add(washSlider);
+                rowPanel.Children.Add(washTxt);
+
+                MotionAxesPanel.Children.Add(rowPanel);
+            }
+        }
+
+        // --- Hardware Polling & OSC ---
 
         private async Task HardwarePollingLoop(CancellationToken token)
         {
@@ -457,13 +585,13 @@ namespace C2O
                             if (!_prevAxes.ContainsKey(globalIdx) || Math.Abs(_prevAxes[globalIdx] - finalProcessedValue) > 0.001f)
                             {
                                 _prevAxes[globalIdx] = finalProcessedValue;
-                                if (_oscClient != null)
+                                if (_oscSender != null)
                                 {
                                     int mappedId = _axisConfigs[globalIdx].OscId;
                                     string customAddr = !string.IsNullOrWhiteSpace(_axisConfigs[globalIdx].CustomAddress) ? _axisConfigs[globalIdx].CustomAddress : _baseAddr;
                                     
                                     var msg = new OscMessage(new Address(customAddr), new object[] { "axis", mappedId, finalProcessedValue });
-                                    await _oscClient.SendMessageAsync(msg);
+                                    await _oscSender.SendMessageAsync(msg);
                                     LogScroll($"[{customAddr}] axis {mappedId}: {finalProcessedValue}");
                                 }
                             }
@@ -478,13 +606,13 @@ namespace C2O
                             if (!_prevButtons.ContainsKey(globalIdx) || _prevButtons[globalIdx] != btnState)
                             {
                                 _prevButtons[globalIdx] = btnState;
-                                if (_oscClient != null)
+                                if (_oscSender != null)
                                 {
                                     int mappedId = _buttonConfigs.ContainsKey(globalIdx) ? _buttonConfigs[globalIdx].OscId : globalIdx;
                                     string customAddr = _buttonConfigs.ContainsKey(globalIdx) && !string.IsNullOrWhiteSpace(_buttonConfigs[globalIdx].CustomAddress) ? _buttonConfigs[globalIdx].CustomAddress : _baseAddr;
 
                                     var msg = new OscMessage(new Address(customAddr), new object[] { "button", mappedId, (int)btnState });
-                                    await _oscClient.SendMessageAsync(msg);
+                                    await _oscSender.SendMessageAsync(msg);
                                     LogScroll($"[{customAddr}] button {mappedId}: {btnState}");
                                 }
                             }
@@ -500,13 +628,13 @@ namespace C2O
                             if (!_prevHats.ContainsKey(globalIdx) || _prevHats[globalIdx] != hatTuple)
                             {
                                 _prevHats[globalIdx] = hatTuple;
-                                if (_oscClient != null)
+                                if (_oscSender != null)
                                 {
                                     int mappedId = _hatConfigs.ContainsKey(globalIdx) ? _hatConfigs[globalIdx].OscId : globalIdx;
                                     string customAddr = _hatConfigs.ContainsKey(globalIdx) && !string.IsNullOrWhiteSpace(_hatConfigs[globalIdx].CustomAddress) ? _hatConfigs[globalIdx].CustomAddress : _baseAddr;
 
                                     var msg = new OscMessage(new Address(customAddr), new object[] { "hat", mappedId, hatTuple.x, hatTuple.y });
-                                    await _oscClient.SendMessageAsync(msg);
+                                    await _oscSender.SendMessageAsync(msg);
                                     LogScroll($"[{customAddr}] hat {mappedId}: {hatTuple.x}, {hatTuple.y}");
                                 }
                             }
@@ -528,12 +656,12 @@ namespace C2O
                             if (!_prevKeys.ContainsKey(idx) || _prevKeys[idx] != isPressed)
                             {
                                 _prevKeys[idx] = isPressed;
-                                if (_oscClient != null)
+                                if (_oscSender != null)
                                 {
                                     string customAddr = !string.IsNullOrWhiteSpace(cfg.CustomAddress) ? cfg.CustomAddress : _baseAddr;
                                     int val = isPressed ? 1 : 0;
                                     var msg = new OscMessage(new Address(customAddr), new object[] { "keyboard", cfg.OscId, val });
-                                    await _oscClient.SendMessageAsync(msg);
+                                    await _oscSender.SendMessageAsync(msg);
                                     LogScroll($"[{customAddr}] keyboard {cfg.OscId} (Key: {cfg.KeyName}): {val}");
                                 }
                             }
@@ -552,6 +680,323 @@ namespace C2O
                 });
             }
         }
+
+        // --- Motion Safety Loop ---
+        private async Task MotionSafetyLoop(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                if (_isRunning && _motionSender != null)
+                {
+                    bool motionEnabled = false;
+                    bool safetyEnabled = false;
+                    int timeout = 500;
+
+                    Dispatcher.Invoke(() => {
+                        motionEnabled = ChkMotionEnable.IsChecked == true;
+                        safetyEnabled = ChkSafetyEnable.IsChecked == true;
+                        int.TryParse(TxtSafetyTimeout.Text, out timeout);
+                    });
+
+                    if (motionEnabled && safetyEnabled && !_hasZeroedMotion)
+                    {
+                        if ((DateTime.UtcNow - _lastMotionReceiveTime).TotalMilliseconds > timeout)
+                        {
+                            _hasZeroedMotion = true;
+                            
+                            string protocol = "";
+                            Dispatcher.Invoke(() => protocol = ((ComboBoxItem)CmbMotionProtocol.SelectedItem)?.Content?.ToString() ?? "");
+                            string[] axes = { "pitch", "roll", "yaw", "surge", "sway", "heave" };
+
+                            foreach (var axis in axes)
+                            {
+                                string fAddr = $"/motion/{axis}";
+                                _motionEmaHistory[fAddr] = 0f;
+                                _motionWashoutPrevInput[fAddr] = 0f;
+                                _motionWashoutPrevOutput[fAddr] = 0f;
+
+                                if (protocol == "SimTools String")
+                                {
+                                    string payload = $"<{axis}>0.00</{axis}>";
+                                    byte[] bytes = Encoding.UTF8.GetBytes(payload);
+                                    await _motionSender.SendAsync(bytes, bytes.Length);
+                                }
+                                else
+                                {
+                                    var msg = new OscMessage(new Address(fAddr), new object[] { 0f });
+                                    await _motionSender.SendMessageAsync(msg);
+                                }
+                            }
+                            LogScroll($"[MOTION SAFETY] No OSC data received for {timeout}ms. Axes zeroed.");
+                        }
+                    }
+                }
+                await Task.Delay(100, token);
+            }
+        }
+
+        // --- OSC Listener Loop (FFB & Motion Forwarding) ---
+        private async Task OscListenerLoop(CancellationToken token)
+        {
+            if (!int.TryParse(ListenPortEntry.Text, out int listenPort)) return;
+
+            try
+            {
+                _oscListener = new UdpClient(listenPort);
+
+                while (!token.IsCancellationRequested)
+                {
+                    try 
+                    {
+                        var msg = await _oscListener.ReceiveMessageAsync();
+                        string addr = msg.Address.Value;
+
+                        // --- Motion Platform Forwarding ---
+                        bool isMotionEnabled = false;
+                        Dispatcher.Invoke(() => isMotionEnabled = ChkMotionEnable.IsChecked == true);
+
+                        if (addr.Contains("/motion") && isMotionEnabled && _motionSender != null)
+                        {
+                            _lastMotionReceiveTime = DateTime.UtcNow;
+                            _hasZeroedMotion = false;
+
+                            if (_motionKilled) continue;
+
+                            var args = msg.Arguments.ToArray();
+                            if (args.Length > 0 && args[0] is float rawVal)
+                            {
+                                string axisName = addr.Split('/').Last().ToLower();
+                                
+                                var prof = _appConfig.Profiles[_currentProfileName];
+                                if (!prof.MotionAxes.TryGetValue(axisName, out var axisConfig))
+                                {
+                                    axisConfig = new MotionAxisConfig(); 
+                                }
+
+                                // 1. Apply Per-Axis Gain
+                                float scaledVal = rawVal * axisConfig.Gain;
+                                
+                                // 2. Apply Per-Axis EMA Smooth
+                                if (!_motionEmaHistory.ContainsKey(addr)) _motionEmaHistory[addr] = scaledVal;
+                                else
+                                {
+                                    float alpha = 1.0f - axisConfig.Smooth;
+                                    _motionEmaHistory[addr] = (alpha * scaledVal) + ((1.0f - alpha) * _motionEmaHistory[addr]);
+                                }
+                                float smoothedVal = _motionEmaHistory[addr];
+
+                                // 3. Apply Per-Axis High-Pass Washout Filter
+                                float finalOutputVal = smoothedVal;
+
+                                if (axisConfig.WashoutEnabled)
+                                {
+                                    if (!_motionWashoutPrevInput.ContainsKey(addr))
+                                    {
+                                        _motionWashoutPrevInput[addr] = smoothedVal;
+                                        _motionWashoutPrevOutput[addr] = smoothedVal;
+                                    }
+
+                                    float alphaW = axisConfig.WashoutStrength;
+                                    finalOutputVal = alphaW * (_motionWashoutPrevOutput[addr] + smoothedVal - _motionWashoutPrevInput[addr]);
+                                    
+                                    _motionWashoutPrevInput[addr] = smoothedVal;
+                                    _motionWashoutPrevOutput[addr] = finalOutputVal;
+                                }
+
+                                // Update the EMA history preview dictionary with the final value for the UI progress bars
+                                _motionEmaHistory[addr] = finalOutputVal; 
+
+                                // Protocol Translation
+                                string protocol = (string)Dispatcher.Invoke(() => ((ComboBoxItem)CmbMotionProtocol.SelectedItem).Content);
+                                
+                                if (protocol == "SimTools String")
+                                {
+                                    string payload = $"<{axisName}>{finalOutputVal:0.00}</{axisName}>";
+                                    byte[] bytes = Encoding.UTF8.GetBytes(payload);
+                                    await _motionSender.SendAsync(bytes, bytes.Length);
+                                }
+                                else 
+                                {
+                                    // Raw OSC Forward
+                                    var motionMsg = new OscMessage(new Address(addr), new object[] { finalOutputVal });
+                                    await _motionSender.SendMessageAsync(motionMsg);
+                                }
+                            }
+                        }
+
+                        // --- Force Feedback Processing ---
+                        if (addr.StartsWith("/ffb/"))
+                        {
+                            var args = msg.Arguments.ToArray();
+                            float val = 0f;
+
+                            if (args.Length > 0 && args[0] is float parsedFloat)
+                            {
+                                val = parsedFloat;
+                            }
+                            
+                            float gainMultiplier = (float)Dispatcher.Invoke(() => SliderFfbGain.Value);
+                            float scaledVal = val * gainMultiplier;
+
+                            // FFB Clipping Monitor Trigger
+                            if (scaledVal > 100f)
+                            {
+                                Dispatcher.InvokeAsync(() => FfbClipIndicator.Fill = Brushes.Red);
+                                Task.Delay(100).ContinueWith(_ => Dispatcher.InvokeAsync(() => FfbClipIndicator.Fill = _bgDark));
+                            }
+
+                            scaledVal = Math.Clamp(scaledVal, 0, 100);
+
+                            switch (addr)
+                            {
+                                case "/ffb/force":
+                                    ApplyHapticForce(scaledVal, SDL.SDL_HAPTIC_CONSTANT);
+                                    break;
+                                case "/ffb/spring":
+                                    ApplyHapticCondition(scaledVal, SDL.SDL_HAPTIC_SPRING);
+                                    break;
+                                case "/ffb/damper":
+                                    ApplyHapticCondition(scaledVal, SDL.SDL_HAPTIC_DAMPER);
+                                    break;
+                                case "/ffb/friction":
+                                    ApplyHapticCondition(scaledVal, SDL.SDL_HAPTIC_FRICTION);
+                                    break;
+                                case "/ffb/rumble":
+                                    ApplyHapticRumble(scaledVal);
+                                    break;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogScroll($"[OSC IN ERROR] {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception e) when (!(e is ObjectDisposedException))
+            {
+                LogScroll($"[LISTENER ERROR] {e.Message}");
+            }
+        }
+
+        // --- Hardware Effect Routing Methods ---
+
+        private unsafe void ApplyHapticForce(float strengthPercentage, ushort effectType)
+        {
+            short scaledForce = (short)((strengthPercentage / 100f) * 32767);
+
+            foreach (var dev in _activeDevices)
+            {
+                if (dev.Haptic != IntPtr.Zero)
+                {
+                    SDL.SDL_HapticEffect effect = new SDL.SDL_HapticEffect();
+                    effect.type = effectType;
+                    effect.constant.direction.type = SDL.SDL_HAPTIC_CARTESIAN;
+                    effect.constant.direction.dir[0] = 0; 
+                    effect.constant.length = SDL.SDL_HAPTIC_INFINITY;
+                    effect.constant.level = scaledForce;
+
+                    ProcessEffect(dev, effectType, ref effect);
+                }
+            }
+        }
+
+        private unsafe void ApplyHapticCondition(float strengthPercentage, ushort effectType)
+        {
+            ushort level = (ushort)((strengthPercentage / 100f) * 32767);
+
+            foreach (var dev in _activeDevices)
+            {
+                if (dev.Haptic != IntPtr.Zero)
+                {
+                    SDL.SDL_HapticEffect effect = new SDL.SDL_HapticEffect();
+                    effect.type = effectType;
+                    effect.condition.length = SDL.SDL_HAPTIC_INFINITY;
+
+                    // Condition effects (Spring/Damper/Friction) utilize these coefficients across axes
+                    effect.condition.right_coeff[0] = (short)level;
+                    effect.condition.left_coeff[0] = (short)level;
+                    effect.condition.right_sat[0] = 0xFFFF;
+                    effect.condition.left_sat[0] = 0xFFFF;
+
+                    ProcessEffect(dev, effectType, ref effect);
+                }
+            }
+        }
+
+        private void ProcessEffect(DeviceInfo dev, ushort effectType, ref SDL.SDL_HapticEffect effect)
+        {
+            if (!dev.EffectIds.ContainsKey(effectType))
+            {
+                int newId = SDL.SDL_HapticNewEffect(dev.Haptic, ref effect);
+                if (newId >= 0)
+                {
+                    dev.EffectIds[effectType] = newId;
+                    SDL.SDL_HapticRunEffect(dev.Haptic, newId, 1);
+                }
+            }
+            else
+            {
+                int existingId = dev.EffectIds[effectType];
+                SDL.SDL_HapticUpdateEffect(dev.Haptic, existingId, ref effect);
+                SDL.SDL_HapticRunEffect(dev.Haptic, existingId, 1);
+            }
+        }
+
+        private void ApplyHapticRumble(float strengthPercentage)
+        {
+            ushort scaledForce = (ushort)((strengthPercentage / 100f) * 65535);
+
+            foreach (var dev in _activeDevices)
+            {
+                if (dev.IsRumbleInitialized)
+                {
+                    SDL.SDL_HapticRumblePlay(dev.Haptic, (float)(strengthPercentage / 100f), (uint)100);
+                }
+            }
+        }
+
+        // --- Motion Kill Switch ---
+
+        private async void BtnMotionKill_Click(object sender, RoutedEventArgs e)
+        {
+            _motionKilled = !_motionKilled;
+            
+            if (_motionKilled)
+            {
+                BtnMotionKill.Background = Brushes.Gray;
+                BtnMotionKill.Content = "MOTION KILLED (CLICK TO RESUME)";
+                
+                // Send zeroed telemetry to stop rig movement
+                if (_motionSender != null)
+                {
+                    string protocol = ((ComboBoxItem)CmbMotionProtocol.SelectedItem)?.Content?.ToString() ?? "";
+                    string[] axes = { "pitch", "roll", "yaw", "surge", "sway", "heave" };
+                    
+                    foreach(var axis in axes) 
+                    {
+                        if (protocol == "SimTools String")
+                        {
+                            string payload = $"<{axis}>0.00</{axis}>";
+                            byte[] bytes = Encoding.UTF8.GetBytes(payload);
+                            await _motionSender.SendAsync(bytes, bytes.Length); 
+                        }
+                        else
+                        {
+                            var motionMsg = new OscMessage(new Address($"/motion/{axis}"), new object[] { 0f });
+                            await _motionSender.SendMessageAsync(motionMsg);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                BtnMotionKill.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#B30000"));
+                BtnMotionKill.Content = "MOTION KILL SWITCH";
+            }
+        }
+
+        // --- Axis Processing ---
 
         private float GetAxisValue(int axisIndex, float rawValue)
         {
@@ -605,6 +1050,17 @@ namespace C2O
             foreach (var kvp in _prevButtons)
                 if (_buttonPreviewDots.TryGetValue(kvp.Key, out var dot)) dot.Fill = kvp.Value == 1 ? Brushes.LimeGreen : Brushes.White;
 
+            // Update Motion Previews
+            if (_motionEmaHistory.Count > 0)
+            {
+                if (_motionEmaHistory.TryGetValue("/motion/pitch", out float p)) BarPitch.Value = p;
+                if (_motionEmaHistory.TryGetValue("/motion/roll", out float r)) BarRoll.Value = r;
+                if (_motionEmaHistory.TryGetValue("/motion/yaw", out float y)) BarYaw.Value = y;
+                if (_motionEmaHistory.TryGetValue("/motion/surge", out float su)) BarSurge.Value = su;
+                if (_motionEmaHistory.TryGetValue("/motion/sway", out float sw)) BarSway.Value = sw;
+                if (_motionEmaHistory.TryGetValue("/motion/heave", out float h)) BarHeave.Value = h;
+            }
+
             if (_isRunning && !_isScrollMode) 
             {
                 var sb = new System.Text.StringBuilder();
@@ -651,6 +1107,39 @@ namespace C2O
             LogArea.Clear();
         }
 
+        // Dynamic FFB Test Button Click Handler
+        private async void BtnTestFfb_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_activeDevices.Any(d => d.Haptic != IntPtr.Zero))
+            {
+                MessageBox.Show("No devices with Haptic Force Feedback support are currently connected/active.");
+                return;
+            }
+
+            BtnTestFfb.IsEnabled = false;
+            BtnTestFfb.Content = "Rumbling...";
+
+            float strength = (float)SliderTestStrength.Value;
+            int durationMs = (int)SliderTestDuration.Value;
+            int pulses = (int)SliderTestPulses.Value;
+            int pauseMs = 150; 
+
+            for (int i = 0; i < pulses; i++)
+            {
+                ApplyHapticForce(strength, SDL.SDL_HAPTIC_CONSTANT);
+                await Task.Delay(durationMs);
+                ApplyHapticForce(0f, SDL.SDL_HAPTIC_CONSTANT);
+                
+                if (i < pulses - 1)
+                {
+                    await Task.Delay(pauseMs);
+                }
+            }
+
+            BtnTestFfb.Content = "Execute FFB Test";
+            BtnTestFfb.IsEnabled = true;
+        }
+
         private void BtnToggleStream_Click(object sender, RoutedEventArgs e)
         {
             if (!_isRunning) StartStreaming();
@@ -667,8 +1156,16 @@ namespace C2O
             }
 
             _baseAddr = BaseAddrEntry.Text;
-            _oscClient = new UdpClient(ip, port);
+            _oscSender = new UdpClient(ip, port);
+            
+            if (ChkMotionEnable.IsChecked == true && int.TryParse(MotionPortEntry.Text, out int mPort))
+            {
+                _motionSender = new UdpClient(MotionIpEntry.Text, mPort);
+            }
+
             _isRunning = true;
+            _lastMotionReceiveTime = DateTime.UtcNow;
+            _hasZeroedMotion = false;
             
             BtnToggleStream.Content = "Stop Streaming";
             BtnToggleStream.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#DC3545"));
@@ -684,6 +1181,8 @@ namespace C2O
 
             _pollingCancellationToken = new CancellationTokenSource();
             Task.Run(() => HardwarePollingLoop(_pollingCancellationToken.Token));
+            Task.Run(() => OscListenerLoop(_pollingCancellationToken.Token));
+            Task.Run(() => MotionSafetyLoop(_pollingCancellationToken.Token));
         }
 
         private void StopStreaming()
@@ -691,10 +1190,20 @@ namespace C2O
             _isRunning = false;
             _pollingCancellationToken?.Cancel();
 
-            if (_oscClient != null)
+            if (_oscSender != null)
             {
-                _oscClient.Close();
-                _oscClient.Dispose();
+                _oscSender.Close();
+                _oscSender.Dispose();
+            }
+            if (_oscListener != null)
+            {
+                _oscListener.Close();
+                _oscListener.Dispose();
+            }
+            if (_motionSender != null)
+            {
+                _motionSender.Close();
+                _motionSender.Dispose();
             }
 
             BtnToggleStream.Content = "Start Streaming";
@@ -748,8 +1257,8 @@ namespace C2O
 
             foreach (var device in _activeDevices)
             {
-                if (device.Joystick != IntPtr.Zero)
-                    SDL.SDL_JoystickClose(device.Joystick);
+                if (device.Haptic != IntPtr.Zero) SDL.SDL_HapticClose(device.Haptic);
+                if (device.Joystick != IntPtr.Zero) SDL.SDL_JoystickClose(device.Joystick);
             }
 
             _activeDevices.Clear();
@@ -772,12 +1281,22 @@ namespace C2O
             IntPtr joy = SDL.SDL_JoystickOpen(selectedIndex);
             if (joy == IntPtr.Zero) return;
 
+            IntPtr haptic = SDL.SDL_HapticOpenFromJoystick(joy);
+            bool rumbleInit = false;
+
+            if (haptic != IntPtr.Zero && SDL.SDL_HapticRumbleSupported(haptic) != 0)
+            {
+                if (SDL.SDL_HapticRumbleInit(haptic) == 0) rumbleInit = true;
+            }
+
             int axOff = _activeDevices.Sum(d => d.NumAxes);
             int btnOff = _activeDevices.Sum(d => d.NumButtons);
             int hatOff = _activeDevices.Sum(d => d.NumHats);
 
             var newDevice = new DeviceInfo {
                 Joystick = joy,
+                Haptic = haptic,
+                IsRumbleInitialized = rumbleInit,
                 Name = SDL.SDL_JoystickName(joy),
                 NumAxes = SDL.SDL_JoystickNumAxes(joy),
                 NumButtons = SDL.SDL_JoystickNumButtons(joy),
@@ -802,6 +1321,12 @@ namespace C2O
             };
             var mainStack = new StackPanel();
             deviceGroup.Content = mainStack;
+
+            if (dev.Haptic != IntPtr.Zero)
+            {
+                string featureText = dev.IsRumbleInitialized ? "✅ Haptic FFB + Rumble Supported" : "✅ Haptic Force Feedback Supported";
+                mainStack.Children.Add(new TextBlock { Text = featureText, Foreground = Brushes.LimeGreen, FontWeight = FontWeights.Bold, Margin = new Thickness(5, 0, 0, 10) });
+            }
 
             if (dev.NumAxes > 0)
             {
