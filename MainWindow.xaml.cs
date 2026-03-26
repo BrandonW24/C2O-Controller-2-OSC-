@@ -32,10 +32,12 @@ namespace C2O
     {
         public string Ip { get; set; } = "127.0.0.1";
         public string Port { get; set; } = "4041";
+        public string ListenIp { get; set; } = "127.0.0.1";
         public string ListenPort { get; set; } = "4042";
         public string BaseAddress { get; set; } = "/wheel/input";
         
         // FFB Configs
+        public bool FfbEnabled { get; set; } = true;
         public float FfbGain { get; set; } = 1.0f;
         
         // Motion configs
@@ -169,6 +171,12 @@ namespace C2O
         private SolidColorBrush _bgDark = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#2F353D"));
         private SolidColorBrush _inputBoxColor = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#717171"));
         private SolidColorBrush _labelColor = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#DFBB3F"));
+        
+        // FFB / Incoming UI queue mechanism
+        private ConcurrentQueue<string> _incomingLogQueue = new ConcurrentQueue<string>();
+        private ConcurrentDictionary<string, string> _latestIncomingOsc = new ConcurrentDictionary<string, string>();
+        private volatile bool _isIncomingLoggingEnabled = false;
+        private volatile bool _isIncomingScrollMode = true;
 
         public MainWindow()
         {
@@ -297,10 +305,13 @@ namespace C2O
             var prof = _appConfig.Profiles[_currentProfileName];
             prof.Ip = TargetIpEntry.Text;
             prof.Port = TargetPortEntry.Text;
+            prof.ListenIp = ListenIpEntry.Text;
             prof.ListenPort = ListenPortEntry.Text;
             prof.BaseAddress = BaseAddrEntry.Text;
 
+            prof.FfbEnabled = ChkFfbEnable.IsChecked == true;
             prof.FfbGain = (float)SliderFfbGain.Value;
+            
             prof.MotionEnabled = ChkMotionEnable.IsChecked == true;
             prof.MotionIp = MotionIpEntry.Text;
             prof.MotionPort = MotionPortEntry.Text;
@@ -323,9 +334,11 @@ namespace C2O
             
             TargetIpEntry.Text = prof.Ip;
             TargetPortEntry.Text = prof.Port;
+            ListenIpEntry.Text = string.IsNullOrEmpty(prof.ListenIp) ? "0.0.0.0" : prof.ListenIp;
             ListenPortEntry.Text = prof.ListenPort;
             BaseAddrEntry.Text = prof.BaseAddress;
 
+            ChkFfbEnable.IsChecked = prof.FfbEnabled;
             SliderFfbGain.Value = prof.FfbGain;
             TxtFfbGain.Text = prof.FfbGain.ToString("0.0");
             
@@ -738,11 +751,21 @@ namespace C2O
         // --- OSC Listener Loop (FFB & Motion Forwarding) ---
         private async Task OscListenerLoop(CancellationToken token)
         {
-            if (!int.TryParse(ListenPortEntry.Text, out int listenPort)) return;
+            string listenIpStr = "127.0.0.1";
+            int listenPort = 4042;
+            
+            // Safely get UI values before starting the background loop
+            Dispatcher.Invoke(() => {
+                listenIpStr = ListenIpEntry.Text;
+                int.TryParse(ListenPortEntry.Text, out listenPort);
+            });
 
             try
             {
-                _oscListener = new UdpClient(listenPort);
+                if (!System.Net.IPAddress.TryParse(listenIpStr, out System.Net.IPAddress listenIp)) 
+                    listenIp = System.Net.IPAddress.Any;
+
+                _oscListener = new UdpClient(new System.Net.IPEndPoint(listenIp, listenPort));
 
                 while (!token.IsCancellationRequested)
                 {
@@ -750,11 +773,33 @@ namespace C2O
                     {
                         var msg = await _oscListener.ReceiveMessageAsync();
                         string addr = msg.Address.Value;
+                        var args = msg.Arguments.ToArray();
+
+                        // --- Queue log if enabled ---
+                        if (_isIncomingLoggingEnabled)
+                        {
+                            string logVal = (args.Length > 0 && args[0] != null) ? args[0].ToString() : "null";
+                            
+                            if (_isIncomingScrollMode)
+                            {
+                                _incomingLogQueue.Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] {addr} : {logVal}");
+                                if (_incomingLogQueue.Count > 1000) _incomingLogQueue.TryDequeue(out _);
+                            }
+                            else
+                            {
+                                _latestIncomingOsc[addr] = logVal;
+                            }
+                        }
+
+                        // Gather enabled toggles once per tick to avoid bottlenecking
+                        bool isMotionEnabled = false;
+                        bool isFfbEnabled = false;
+                        Dispatcher.Invoke(() => {
+                            isMotionEnabled = ChkMotionEnable.IsChecked == true;
+                            isFfbEnabled = ChkFfbEnable.IsChecked == true;
+                        });
 
                         // --- Motion Platform Forwarding ---
-                        bool isMotionEnabled = false;
-                        Dispatcher.Invoke(() => isMotionEnabled = ChkMotionEnable.IsChecked == true);
-
                         if (addr.Contains("/motion") && isMotionEnabled && _motionSender != null)
                         {
                             _lastMotionReceiveTime = DateTime.UtcNow;
@@ -762,7 +807,6 @@ namespace C2O
 
                             if (_motionKilled) continue;
 
-                            var args = msg.Arguments.ToArray();
                             if (args.Length > 0 && args[0] is float rawVal)
                             {
                                 string axisName = addr.Split('/').Last().ToLower();
@@ -812,7 +856,7 @@ namespace C2O
                                 if (protocol == "SimTools String")
                                 {
                                     string payload = $"<{axisName}>{finalOutputVal:0.00}</{axisName}>";
-                                    byte[] bytes = Encoding.UTF8.GetBytes(payload);
+                                    byte[] bytes = System.Text.Encoding.UTF8.GetBytes(payload);
                                     await _motionSender.SendAsync(bytes, bytes.Length);
                                 }
                                 else 
@@ -825,9 +869,8 @@ namespace C2O
                         }
 
                         // --- Force Feedback Processing ---
-                        if (addr.StartsWith("/ffb/"))
+                        if (isFfbEnabled && addr.StartsWith("/ffb/"))
                         {
-                            var args = msg.Arguments.ToArray();
                             float val = 0f;
 
                             if (args.Length > 0 && args[0] is float parsedFloat)
@@ -1082,6 +1125,37 @@ namespace C2O
 
                 LogArea.Text = sb.ToString();
             }
+
+            if (_isIncomingLoggingEnabled)
+            {
+                if (_isIncomingScrollMode)
+                {
+                    if (!_incomingLogQueue.IsEmpty)
+                    {
+                        var sb = new StringBuilder();
+                        while (_incomingLogQueue.TryDequeue(out string logLine))
+                        {
+                            sb.AppendLine(logLine);
+                        }
+                        IncomingLogArea.AppendText(sb.ToString());
+                        IncomingLogArea.ScrollToEnd();
+                    }
+                }
+                else
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendLine("--- INCOMING OSC DASHBOARD ---");
+                    sb.AppendLine($"Last Update: {DateTime.Now:HH:mm:ss.fff}");
+                    sb.AppendLine("------------------------------");
+                    
+                    foreach (var kvp in _latestIncomingOsc.OrderBy(k => k.Key))
+                    {
+                        sb.AppendLine($"{kvp.Key} : {kvp.Value}");
+                    }
+                    
+                    IncomingLogArea.Text = sb.ToString();
+                }
+            }
         }
 
         private void LogScroll(string message)
@@ -1094,6 +1168,28 @@ namespace C2O
                     LogArea.ScrollToEnd();
                 });
             }
+        }
+
+        private void ChkLogIncoming_Checked(object sender, RoutedEventArgs e) => _isIncomingLoggingEnabled = true;
+        
+        private void ChkLogIncoming_Unchecked(object sender, RoutedEventArgs e)
+        {
+            _isIncomingLoggingEnabled = false;
+            _incomingLogQueue.Clear();
+            _latestIncomingOsc.Clear();
+        }
+
+        private void IncomingOutputStyle_Changed(object sender, RoutedEventArgs e)
+        {
+            if (RadioIncomingScroll != null) _isIncomingScrollMode = RadioIncomingScroll.IsChecked == true;
+            if (IncomingLogArea != null) IncomingLogArea.Clear();
+        }
+
+        private void BtnClearIncomingLog_Click(object sender, RoutedEventArgs e)
+        {
+            IncomingLogArea.Clear();
+            _incomingLogQueue.Clear();
+            _latestIncomingOsc.Clear();
         }
 
         private void OutputStyle_Changed(object sender, RoutedEventArgs e)
