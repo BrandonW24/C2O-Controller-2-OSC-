@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="steering-wheel-car_off.png" />
+    <None Remove="steering-wheel-car_on.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="steering-wheel-car_off.png" />
+    <EmbeddedResource Include="steering-wheel-car_on.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CoreOSC" Version="1.0.0" />
+    <PackageReference Include="ppy.SDL2-CS" Version="1.0.82" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="vJoyInterface.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
