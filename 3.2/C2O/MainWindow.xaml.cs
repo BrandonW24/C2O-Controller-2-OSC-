@@ -1005,6 +1005,7 @@ namespace C2O
                         // Gather enabled toggles once per tick to avoid bottlenecking
                         bool isMotionEnabled = false;
                         bool isFfbEnabled = false;
+                        bool isTactileEnabled = false;
                         Dispatcher.Invoke(() => {
                             isMotionEnabled = ChkMotionEnable.IsChecked == true;
                             isFfbEnabled = ChkFfbEnable.IsChecked == true;
@@ -1113,47 +1114,74 @@ namespace C2O
                             }
                         }
 
-                        // --- Force Feedback Processing ---
+                        // --- UPDATE: Force Feedback Processing with Granular Multipliers ---
                         if (isFfbEnabled && addr.StartsWith("/ffb/"))
                         {
-                            float val = 0f;
-
-                            if (args.Length > 0 && args[0] is float parsedFloat)
-                            {
-                                val = parsedFloat;
-                            }
+                            float val = args.Length > 0 && args[0] is float parsedFloat ? parsedFloat : 0f;
                             
-                            float gainMultiplier = (float)Dispatcher.Invoke(() => SliderFfbGain.Value);
-                            float scaledVal = val * gainMultiplier;
+                            float globalGain = 1.0f;
+                            float springMult = 1.0f;
+                            float damperMult = 1.0f;
+                            float frictionMult = 1.0f;
+
+                            Dispatcher.Invoke(() => {
+                                globalGain = (float)SliderFfbGain.Value;
+                                springMult = (float)SliderFfbSpring.Value;
+                                damperMult = (float)SliderFfbDamper.Value;
+                                frictionMult = (float)SliderFfbFriction.Value;
+                            });
+
+                            float scaledVal = val * globalGain;
 
                             // FFB Clipping Monitor Trigger
                             if (scaledVal > 100f)
                             {
-                                await Dispatcher.InvokeAsync(() => FfbClipIndicator.Fill = Brushes.Red);
+                                _ = Dispatcher.InvokeAsync(() => FfbClipIndicator.Fill = Brushes.Red);
                                 Task.Delay(100).ContinueWith(_ => Dispatcher.InvokeAsync(() => FfbClipIndicator.Fill = _bgDark));
                             }
-
-                            scaledVal = Math.Clamp(scaledVal, 0, 100);
 
                             switch (addr)
                             {
                                 case "/ffb/force":
-                                    ApplyHapticForce(scaledVal, SDL.SDL_HAPTIC_CONSTANT);
+                                    ApplyHapticForce(Math.Clamp(scaledVal, 0, 100), SDL.SDL_HAPTIC_CONSTANT);
                                     break;
                                 case "/ffb/spring":
-                                    ApplyHapticCondition(scaledVal, SDL.SDL_HAPTIC_SPRING);
+                                    ApplyHapticCondition(Math.Clamp(scaledVal * springMult, 0, 100), SDL.SDL_HAPTIC_SPRING);
                                     break;
                                 case "/ffb/damper":
-                                    ApplyHapticCondition(scaledVal, SDL.SDL_HAPTIC_DAMPER);
+                                    ApplyHapticCondition(Math.Clamp(scaledVal * damperMult, 0, 100), SDL.SDL_HAPTIC_DAMPER);
                                     break;
                                 case "/ffb/friction":
-                                    ApplyHapticCondition(scaledVal, SDL.SDL_HAPTIC_FRICTION);
+                                    ApplyHapticCondition(Math.Clamp(scaledVal * frictionMult, 0, 100), SDL.SDL_HAPTIC_FRICTION);
                                     break;
                                 case "/ffb/rumble":
-                                    ApplyHapticRumble(scaledVal);
+                                    ApplyHapticRumble(Math.Clamp(scaledVal, 0, 100));
                                     break;
                             }
                         }
+
+                        // --- NEW: Tactile Audio Processing ---
+                        if (isTactileEnabled && addr.StartsWith("/audio/"))
+                        {
+                            float val = args.Length > 0 && args[0] is float parsedFloat ? parsedFloat : 0f;
+                            float tactileMultiplier = 0f;
+
+                            Dispatcher.Invoke(() => {
+                                if (addr == "/audio/engine") tactileMultiplier = (float)SliderTactileEngine.Value;
+                                else if (addr == "/audio/impact") tactileMultiplier = (float)SliderTactileImpact.Value;
+                                else if (addr == "/audio/wind") tactileMultiplier = (float)SliderTactileWind.Value;
+                            });
+
+                            // Scale the audio envelope (0.0 - 1.0) up to a rumble percentage (0 - 100)
+                            float tactileForce = Math.Clamp(val * tactileMultiplier * 100f, 0, 100);
+
+                            // Note: Currently routing this to SDL Rumble as a baseline. 
+                            // To drive an actual Buttkicker via audio jack, you would pass `tactileForce` 
+                            // into an NAudio sine-wave generator here to output a 40Hz tone.
+                            ApplyHapticRumble(tactileForce);
+                        }
+
+
                     }
                     catch (Exception ex)
                     {

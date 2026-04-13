@@ -47,7 +47,7 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="30,20,30,30">
                         <TextBlock Text="Controller 2 OSC (C2O)" Foreground="#DFBB3F" FontSize="28" FontWeight="Bold" Margin="0,0,0,5"/>
-                        <TextBlock Text="C# Edition V3.3 Motion &amp; FFB Update" Foreground="#717171" FontSize="14" FontWeight="Bold" Margin="0,0,0,20"/>
+                        <TextBlock Text="C# Edition V3.5 Motion &amp; Audio buttkicker &amp; FFB Update" Foreground="#717171" FontSize="14" FontWeight="Bold" Margin="0,0,0,20"/>
 
                         <TextBlock TextWrapping="Wrap" Foreground="White" FontSize="14" Margin="0,0,0,10" LineHeight="20"><Run Text="C2O is a lightweight, GUI-driven application designed to seamlessly bridge the gap between physical hardware and digital environments. It reads real-time data from connected USB steering wheels, Bluetooth gamepads, joysticks, and keyboards. Capturing everything from continuous analog axes (like pedals and throttles) to discrete button presses and D-pad movements."/></TextBlock>
                         <TextBlock TextWrapping="Wrap" Foreground="White" FontSize="14" Margin="0,0,0,10" LineHeight="20"><Run Text="The application translates and broadcasts these inputs over a local network using the Open Sound Control (OSC) protocol, ensuring extremely low-latency communication without the need for heavy middleware."/></TextBlock>
@@ -78,6 +78,13 @@
                                 <TextBlock Foreground="White" FontSize="13" FontFamily="Consolas" Margin="0,0,0,5" Text="/motion/sway  [Float] -&gt; Left/Right Acceleration"/>
                                 <TextBlock Foreground="White" FontSize="13" FontFamily="Consolas" Margin="0,0,0,10" Text="/motion/heave [Float] -&gt; Up/Down Acceleration"/>
                                 <TextBlock Foreground="#A0A0A0" FontSize="12" FontStyle="Italic" TextWrapping="Wrap" Margin="0,0,0,5" Text="Note: Incoming motion data is processed through C2O's per-axis washout filters and gain settings before being forwarded to your rig via Raw OSC or SimTools formatted strings."/>
+
+                                <TextBlock Text="Incoming Audio Telemetry (ML Unity Audio -> OSC)" Foreground="#DFBB3F" FontSize="16" FontWeight="Bold" Margin="0,10,0,10"/>
+                                <TextBlock Foreground="White" FontSize="13" FontFamily="Consolas" Margin="0,0,0,5" Text="/audio/engine [Float] -&gt; Engine Sound"/>
+                                <TextBlock Foreground="White" FontSize="13" FontFamily="Consolas" Margin="0,0,0,5" Text="/audio/wind  [Float] -&gt; Wind Sound"/>
+                                <TextBlock Foreground="White" FontSize="13" FontFamily="Consolas" Margin="0,0,0,5" Text="/audio/impact  [Float] -&gt; Impact Magnitude"/>
+                                <TextBlock Foreground="#A0A0A0" FontSize="12" FontStyle="Italic" TextWrapping="Wrap" Margin="0,0,0,5" Text="Note: This feature is experimental"/>
+
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -223,15 +230,17 @@
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
+
             <TabItem Header="Force Feedback &amp; Motion">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="20">
+                        
                         <Expander Margin="0,0,0,15" Padding="15" IsExpanded="True">
                             <Expander.Header>
                                 <TextBlock Text="Haptic Force Feedback Settings" Foreground="#DFBB3F" FontSize="18" FontWeight="Bold"/>
                             </Expander.Header>
                             <StackPanel Margin="0,10,0,0">
-                                <TextBlock TextWrapping="Wrap" Foreground="White" FontSize="14" Margin="0,0,0,5"><Run Text="Configure global scaling for incoming OSC FFB signals. These affect connected devices that support SDL Haptics (like Direct Drive wheels and standard FFB joysticks)."/></TextBlock>
+                                <TextBlock TextWrapping="Wrap" Foreground="White" FontSize="14" Margin="0,0,0,5"><Run Text="Configure global scaling and individual effect multipliers for incoming OSC FFB signals. These affect connected devices that support SDL Haptics (like Direct Drive wheels and standard FFB joysticks)."/></TextBlock>
 
                                 <CheckBox x:Name="ChkFfbEnable" Content="Enable Force Feedback Processing" Foreground="White" FontWeight="Bold" IsChecked="True" Margin="0,0,0,15"/>
 
@@ -243,6 +252,21 @@
                                     <Ellipse x:Name="FfbClipIndicator" Width="16" Height="16" Fill="#2F353D" Margin="20,0,0,0" ToolTip="Flashes Red when FFB signal is clipping (exceeding 100%)"/>
                                     <TextBlock Text="Clipping Monitor" Foreground="White" VerticalAlignment="Center" Margin="5,0,0,0"/>
                                 </StackPanel>
+
+                                <WrapPanel Margin="0,5,0,15">
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
+                                        <TextBlock Text="Spring Multiplier:" Width="110" Foreground="White" VerticalAlignment="Center"/>
+                                        <Slider x:Name="SliderFfbSpring" Minimum="0" Maximum="2.0" Value="1.0" Width="100" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
+                                        <TextBlock Text="Damper Multiplier:" Width="110" Foreground="White" VerticalAlignment="Center"/>
+                                        <Slider x:Name="SliderFfbDamper" Minimum="0" Maximum="2.0" Value="1.0" Width="100" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,15,5">
+                                        <TextBlock Text="Friction Multiplier:" Width="110" Foreground="White" VerticalAlignment="Center"/>
+                                        <Slider x:Name="SliderFfbFriction" Minimum="0" Maximum="2.0" Value="1.0" Width="100" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </WrapPanel>
 
                                 <Border Background="#2F353D" CornerRadius="6" Padding="15" Margin="0,15,0,0">
                                     <StackPanel>
@@ -382,6 +406,30 @@
                                 </Grid>
 
                                 <TextBox x:Name="IncomingLogArea" Height="250" Background="#2F353D" Foreground="#33FF00" FontFamily="Consolas" IsReadOnly="True" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" BorderBrush="#717171" Padding="10"/>
+                            </StackPanel>
+                        </Expander>
+
+                        <Expander Margin="0,0,0,15" Padding="15" IsExpanded="True">
+                            <Expander.Header>
+                                <TextBlock Text="Tactile Audio (Buttkicker) Routing" Foreground="#DFBB3F" FontSize="18" FontWeight="Bold"/>
+                            </Expander.Header>
+                            <StackPanel Margin="0,10,0,0">
+                                <TextBlock TextWrapping="Wrap" Foreground="White" FontSize="14" Margin="0,0,0,15"><Run Text="Map incoming audio envelopes directly to hardware rumble or prepare them for soundcard LFE routing."/></TextBlock>
+
+                                <CheckBox x:Name="ChkTactileEnable" Content="Enable Audio-to-Tactile Processing" Foreground="White" FontWeight="Bold" IsChecked="True" Margin="0,0,0,15"/>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="Engine Gain:" Width="120" Foreground="White" VerticalAlignment="Center"/>
+                                    <Slider x:Name="SliderTactileEngine" Minimum="0" Maximum="2.0" Value="1.0" Width="200" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="Impact Gain:" Width="120" Foreground="White" VerticalAlignment="Center"/>
+                                    <Slider x:Name="SliderTactileImpact" Minimum="0" Maximum="3.0" Value="1.5" Width="200" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="Wind Gain:" Width="120" Foreground="White" VerticalAlignment="Center"/>
+                                    <Slider x:Name="SliderTactileWind" Minimum="0" Maximum="1.0" Value="0.2" Width="200" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                                </StackPanel>
                             </StackPanel>
                         </Expander>
 

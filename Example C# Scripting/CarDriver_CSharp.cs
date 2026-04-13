@@ -267,6 +267,30 @@ public class CarDriver_CSharp : MonoBehaviour
     private const float MOTION_THRESHOLD = 0.005f; // 0.5% change required
     private const float FFB_THRESHOLD = 0.5f;      // 0.5 unit change required
 
+    // New audio telemetry for buttkicker support experimental
+    //*********************************************************************
+    /*
+    [Header("Tactile/Audio Telemetry")]
+    public bool sendAudioTelemetry = true;
+    private float[] audioSamples = new float[64]; // Small buffer for low-latency RMS calculation
+    private float lastAudioEngine, lastAudioWind;
+
+    private float GetAudioRMS(AudioSource source)
+    {
+        if (source == null || !source.isPlaying) return 0f;
+
+        // Grab a small block of samples from the active audio source
+        source.GetOutputData(audioSamples, 0);
+        float sum = 0;
+        for (int i = 0; i < audioSamples.Length; i++)
+        {
+            sum += audioSamples[i] * audioSamples[i];
+        }
+        return Mathf.Sqrt(sum / audioSamples.Length);
+    }
+    */
+    //*********************************************************************
+
     private void Start()
     {
         Debug.Log("Checking if car is alive...");
@@ -497,6 +521,29 @@ public class CarDriver_CSharp : MonoBehaviour
                     if (Mathf.Abs(damperForce - lastDamper) > FFB_THRESHOLD) { oscWheelScript.SendOSCFloat("/ffb/damper", damperForce); lastDamper = damperForce; }
                     if (Mathf.Abs(finalRumble - lastRumble) > FFB_THRESHOLD) { oscWheelScript.SendOSCFloat("/ffb/rumble", finalRumble); lastRumble = finalRumble; }
                 }
+
+
+                // NEW: Tactile Audio Envelope Telemetry
+                /* Experimental
+                if (sendAudioTelemetry)
+                {
+                    // Combine drive and acceleration envelopes for the engine
+                    float audioEngine = Mathf.Clamp01(GetAudioRMS(engineDriveAudio) + GetAudioRMS(engineAccelerationAudio));
+                    float audioWind = Mathf.Clamp01(GetAudioRMS(windAudio));
+
+                    // DELTA FILTER: Only send if the envelope changes enough
+                    if (Mathf.Abs(audioEngine - lastAudioEngine) > MOTION_THRESHOLD)
+                    {
+                        oscWheelScript.SendOSCFloat("/audio/engine", audioEngine);
+                        lastAudioEngine = audioEngine;
+                    }
+                    if (Mathf.Abs(audioWind - lastAudioWind) > MOTION_THRESHOLD)
+                    {
+                        oscWheelScript.SendOSCFloat("/audio/wind", audioWind);
+                        lastAudioWind = audioWind;
+                    }
+                }
+                */
             }
         }
         else
@@ -652,12 +699,22 @@ public class CarDriver_CSharp : MonoBehaviour
     {
         if (collision != null)
         {
+            float impactMag = collision.impulse.magnitude / 10f;
+
             /*
             var contact = collision.GetContact(0);
             if (contact != null)
             {
-                AudioSource.PlayClipAtPoint(impact, contact.point, collision.impulse.magnitude / 10);
+                AudioSource.PlayClipAtPoint(impact, contact.point, impactMag);
             }*/
+
+            // NEW: Send instant impact spike for tactile feedback experimental
+            /*
+            if (sendAudioTelemetry && oscWheelScript != null && oscWheelScript.isClientRunning)
+            {
+                oscWheelScript.SendOSCFloat("/audio/impact", Mathf.Clamp01(impactMag));
+            }
+            */
         }
     }
 
