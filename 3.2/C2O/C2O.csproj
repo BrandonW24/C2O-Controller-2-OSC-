@@ -22,6 +22,7 @@
   <ItemGroup>
     <PackageReference Include="CoreOSC" Version="1.0.0" />
     <PackageReference Include="ppy.SDL2-CS" Version="1.0.82" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
   <ItemGroup>

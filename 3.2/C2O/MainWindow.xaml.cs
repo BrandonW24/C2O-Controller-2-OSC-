@@ -21,6 +21,8 @@ using System.Text;
 using C2O.Serialization;
 using C2O.VJoy;
 using System.Diagnostics;
+using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace C2O
 {
@@ -88,6 +90,49 @@ namespace C2O
         private volatile bool _isIncomingLoggingEnabled = false;
         private volatile bool _isIncomingScrollMode = true;
 
+        // NAudio Tactile Routing Variables
+        private WaveOutEvent? _tactileWaveOut;
+        private SignalGenerator? _tactileSineWave;
+        private VolumeSampleProvider? _tactileVolumeController;
+        
+        // Individual envelope buffers so we can mix them together
+        private float _tactileVolEngine = 0f;
+        private float _tactileVolWind = 0f;
+        private float _tactileVolImpact = 0f;
+
+        //Audio support,
+        /*
+        We need to spin up the 40Hz sine wave as soon as C2O boots, but keep it muted (Volume = 0) until telemetry arrives.
+        */
+        private void InitTactileAudio()
+        {
+            try
+            {
+                _tactileWaveOut = new WaveOutEvent();
+                _tactileSineWave = new SignalGenerator()
+                {
+                    Gain = 1.0,           // Max base amplitude
+                    Frequency = 40.0,     // 40Hz is the sweet spot for Buttkickers
+                    Type = SignalGeneratorType.Sin
+                };
+                
+                // Wrap the generator in a volume controller so we can dynamically adjust it
+                _tactileVolumeController = new VolumeSampleProvider(_tactileSineWave)
+                {
+                    Volume = 0.0f         // Start completely silent
+                };
+
+                _tactileWaveOut.Init(_tactileVolumeController);
+                _tactileWaveOut.Play();   // Start pumping the silent stream to the soundcard
+                
+                LogScroll("[TACTILE AUDIO] NAudio 40Hz LFE Stream initialized successfully.");
+            }
+            catch (Exception ex)
+            {
+                LogScroll($"[TACTILE AUDIO ERROR] Failed to init NAudio: {ex.Message}");
+            }
+        }
+
         public MainWindow()
         {
             InitializeComponent();
@@ -105,6 +150,8 @@ namespace C2O
             
             SDL.SDL_Init(SDL.SDL_INIT_JOYSTICK | SDL.SDL_INIT_HAPTIC);
             RefreshDevices();
+
+            InitTactileAudio();
 
             _uiTimer = new DispatcherTimer();
             _uiTimer.Interval = TimeSpan.FromMilliseconds(50); 
@@ -165,6 +212,14 @@ namespace C2O
                 if (device.Haptic != IntPtr.Zero) SDL.SDL_HapticClose(device.Haptic);
                 if (device.Joystick != IntPtr.Zero) SDL.SDL_JoystickClose(device.Joystick);
             }
+
+            //To stop the audio when you close the app
+            if (_tactileWaveOut != null)
+            {
+                _tactileWaveOut.Stop();
+                _tactileWaveOut.Dispose();
+            }
+
             SDL.SDL_Quit();
         }
 
@@ -536,6 +591,20 @@ namespace C2O
                     }
 
                     IncomingLogArea.Text = sb.ToString();
+                }
+            }
+            
+            // --- Tactile Impact Decay ---
+            // Naturally fade out crash/impact vibrations if no new OSC impact messages arrive
+            if (_tactileVolImpact > 0)
+            {
+                _tactileVolImpact -= 0.1f; // Decay speed
+                if (_tactileVolImpact < 0) _tactileVolImpact = 0;
+
+                // Update the soundcard output with the decayed mix
+                if (_tactileVolumeController != null)
+                {
+                    _tactileVolumeController.Volume = Math.Clamp(_tactileVolEngine + _tactileVolWind + _tactileVolImpact, 0f, 1f);
                 }
             }
         }
@@ -1172,13 +1241,22 @@ namespace C2O
                                 else if (addr == "/audio/wind") tactileMultiplier = (float)SliderTactileWind.Value;
                             });
 
-                            // Scale the audio envelope (0.0 - 1.0) up to a rumble percentage (0 - 100)
-                            float tactileForce = Math.Clamp(val * tactileMultiplier * 100f, 0, 100);
+                            // Store the scaled envelope into its specific buffer channel
+                            if (addr == "/audio/engine") _tactileVolEngine = val * tactileMultiplier;
+                            else if (addr == "/audio/wind") _tactileVolWind = val * tactileMultiplier;
+                            else if (addr == "/audio/impact") _tactileVolImpact = val * tactileMultiplier;
 
-                            // Note: Currently routing this to SDL Rumble as a baseline. 
-                            // To drive an actual Buttkicker via audio jack, you would pass `tactileForce` 
-                            // into an NAudio sine-wave generator here to output a 40Hz tone.
-                            ApplyHapticRumble(tactileForce);
+                            // Mix the channels together (capped at a maximum volume of 1.0)
+                            float targetVolume = Math.Clamp(_tactileVolEngine + _tactileVolWind + _tactileVolImpact, 0f, 1f);
+
+                            // Apply the volume directly to the 40Hz soundcard stream!
+                            if (_tactileVolumeController != null)
+                            {
+                                _tactileVolumeController.Volume = targetVolume;
+                            }
+
+                            // Optional: Send it to gamepad rumble motors as well
+                            ApplyHapticRumble(Math.Clamp(targetVolume * 100f, 0, 100));
                         }
 
 
