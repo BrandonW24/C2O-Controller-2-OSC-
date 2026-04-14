@@ -593,7 +593,7 @@ namespace C2O
                     IncomingLogArea.Text = sb.ToString();
                 }
             }
-            
+
             // --- Tactile Impact Decay ---
             // Naturally fade out crash/impact vibrations if no new OSC impact messages arrive
             if (_tactileVolImpact > 0)
@@ -606,6 +606,11 @@ namespace C2O
                 {
                     _tactileVolumeController.Volume = Math.Clamp(_tactileVolEngine + _tactileVolWind + _tactileVolImpact, 0f, 1f);
                 }
+            }
+
+            if (_tactileVolumeController != null)
+            {
+                BarTactileVolume.Value = _tactileVolumeController.Volume;
             }
         }
 
