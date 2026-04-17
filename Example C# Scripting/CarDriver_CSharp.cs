@@ -10,7 +10,7 @@ public class CarDriver_CSharp : MonoBehaviour
     private const float ENGINE_IDLE_RPM = 800f;
     private const float ENGINE_MAX_RPM = 8000f;
 
-    // Gearbox values (now local variables instead of a class)
+    // Gearbox values
     private float[] gearRatios = { 3f, 3f, 2f, 1.5f, 1f, 0.5f };
     private float gearFactor = 3.75f;
     private float diffRatio = 0.65f;
@@ -28,7 +28,6 @@ public class CarDriver_CSharp : MonoBehaviour
         Acceleration
     }
 
-    
     public class CarEngine
     {
         public float rpm = 0;
@@ -87,77 +86,6 @@ public class CarDriver_CSharp : MonoBehaviour
         }
     }
 
-    /* Newer, seems to create lag?
-    public class CarEngine
-    {
-        public float rpm = 0;
-        public EngineState state = EngineState.Off;
-        public float startTime = 0;
-
-        // Add a cooldown timer to prevent frame-perfect oscillation
-        private float lastShiftTime = 0f;
-        private const float SHIFT_COOLDOWN = 1.5f; // 0.5 seconds between gear shifts
-
-        public void CalculateCurrentEngineState(float throttle, float speed, WheelCollider wheelBL, CarDriver_CSharp car)
-        {
-            if (state == EngineState.Off || state == EngineState.Startup)
-            {
-                rpm = 0;
-                if (state == EngineState.Startup && Time.time - startTime > 3)
-                {
-                    state = EngineState.Idle;
-                }
-                return;
-            }
-
-            float wheelRPM = (speed * 60) / (2 * Mathf.PI * wheelBL.radius);
-            wheelRPM = Mathf.Abs(wheelRPM) * ((car.gearFactor * car.gearRatios[car.currentGear - 1]) + car.diffRatio);
-
-            // Widen the thresholds: Up-shift at 85%, Down-shift at 40%
-            // and check against the shift cooldown timer
-            if (Time.time - lastShiftTime > SHIFT_COOLDOWN)
-            {
-                if (wheelRPM > ENGINE_MAX_RPM * 0.85f) // Increased from 0.7f
-                {
-                    if (car.currentGear < MAX_GEAR_INDEX)
-                    {
-                        car.currentGear++;
-                        lastShiftTime = Time.time;
-                    }
-                }
-                else if (wheelRPM < ENGINE_MAX_RPM * 0.40f) // Decreased from 0.5f
-                {
-                    if (car.currentGear > MIN_GEAR_INDEX)
-                    {
-                        car.currentGear--;
-                        lastShiftTime = Time.time;
-                    }
-                }
-            }
-
-            float targetRPM = wheelRPM + Mathf.Lerp(0, ENGINE_MAX_RPM / 16, Mathf.Abs(throttle));
-            rpm = Mathf.MoveTowards(rpm, targetRPM, 100);
-
-            if (throttle <= 0.05f)
-            {
-                state = EngineState.Idle;
-            }
-            else
-            {
-                state = EngineState.Acceleration;
-            }
-
-            rpm = Mathf.Clamp(rpm, ENGINE_IDLE_RPM, ENGINE_MAX_RPM);
-        }
-
-        public float GetEngineTorque(float engineRPM)
-        {
-            float rpm = Mathf.Clamp(engineRPM / ENGINE_MAX_RPM, 0, 1);
-            return Mathf.Clamp(Mathf.Sin(Mathf.Sqrt(rpm) * Mathf.PI) * 0.58f + Mathf.Sin(rpm * rpm * Mathf.PI) * 0.58f + 0.095f, 0, 1);
-        }
-    }
-    */
-
     public CarEngine carEngine = new CarEngine();
 
     // Serialized fields
@@ -183,16 +111,19 @@ public class CarDriver_CSharp : MonoBehaviour
     public bool useAckerman = true;
     public bool isAllWheelDrive = true;
     [Range(0f, 1f)]
-    public float awdFrontBias = 0.4f; // 40% front, 60% rear is a standard performance split
+    public float awdFrontBias = 0.4f;
     [Range(0f, 1f)]
-    public float steeringPowerReduction = 0.5f; // Reduce front power by up to 50% at full steering lock
+    public float steeringPowerReduction = 0.5f;
     public float handBreakTorque = 1000f;
     public bool useCurvedSteeringInVR = true;
 
     public bool isAllWheelSteering = false;
     [Tooltip("Negative values turn opposite to front (tight turns). Positive values turn same way (crab walk).")]
     [Range(-1f, 1f)]
-    public float rearSteeringRatio = -0.5f; // -0.5 means rear wheels turn half as much, in the opposite direction
+    public float rearSteeringRatio = -0.5f;
+
+    [Header("Physics Realism")]
+    public bool useRealisticHandling = false;
 
     public GameObject minimapMarker;
 
@@ -208,7 +139,7 @@ public class CarDriver_CSharp : MonoBehaviour
     public Text debugText;
 
     public GameObject directionIndicator;
-    public TextMeshPro nextGateText; // Optional text display
+    public TextMeshPro nextGateText;
     private int currentTargetGate = 1;
 
     // Internal variables
@@ -231,14 +162,13 @@ public class CarDriver_CSharp : MonoBehaviour
     public GameObject WindObject;
 
     public GameObject RacingManagerOBJ;
-    //   public RacingGameManager RacingGameManagerReference;
 
     public bool useSteeringWheelforVR;
     public GameObject steeringwheel_VR;
     public MLWheel steeringWheel_script;
 
     public bool useOSCWheelforInput;
-    public MLWheelOSC oscWheelScript; // NEW: Reference to the OSC script
+    public MLWheelOSC oscWheelScript;
     public GameObject OSCWheelobject;
     public string ownerName;
 
@@ -248,48 +178,33 @@ public class CarDriver_CSharp : MonoBehaviour
     [Range(0f, 3f)]
     public float gravityMultiplier = 0.38f;
 
-    // NEW: Reference to hold the currently active Mars Fact UI
     public GameObject CurrentMarsFact;
-
 
     // NEW Motion Telemetry Tracking
     private Vector3 lastLocalVelocity = Vector3.zero;
     private float lastYawAngle = 0f;
-    private WheelController[] wheelControllers; // Cache to read slip data
     private WheelController wcFR_Script;
     private WheelController wcFL_Script;
     private WheelController wcBR_Script;
     private WheelController wcBL_Script;
 
-    // NEW: Delta Threshold Tracking to prevent network flooding
+    // Delta Threshold Tracking
     private float lastPitch, lastRoll, lastYaw, lastSurge, lastSway, lastHeave;
     private float lastSpring, lastDamper, lastRumble;
-    private const float MOTION_THRESHOLD = 0.005f; // 0.5% change required
-    private const float FFB_THRESHOLD = 0.5f;      // 0.5 unit change required
+    private const float MOTION_THRESHOLD = 0.005f;
+    private const float FFB_THRESHOLD = 0.5f;
 
-    // New audio telemetry for buttkicker support experimental
-    //*********************************************************************
-    /*
+    // Tactile Audio Telemetry (Safe Sandbox Mode)
     [Header("Tactile/Audio Telemetry")]
     public bool sendAudioTelemetry = true;
-    private float[] audioSamples = new float[64]; // Small buffer for low-latency RMS calculation
-    private float lastAudioEngine, lastAudioWind;
+    private float audioTelemetryTimer = 0f;
+    private const float AUDIO_TELEMETRY_RATE = 0.05f; // 20Hz
 
-    private float GetAudioRMS(AudioSource source)
-    {
-        if (source == null || !source.isPlaying) return 0f;
+    [Header("OSC Error Handling")]
+    private bool oscLastAttemptSucceeded = true;
+    private float oscRetryTimer = 0f;
+    private const float OSC_RETRY_DELAY = 2.0f;
 
-        // Grab a small block of samples from the active audio source
-        source.GetOutputData(audioSamples, 0);
-        float sum = 0;
-        for (int i = 0; i < audioSamples.Length; i++)
-        {
-            sum += audioSamples[i] * audioSamples[i];
-        }
-        return Mathf.Sqrt(sum / audioSamples.Length);
-    }
-    */
-    //*********************************************************************
 
     private void Start()
     {
@@ -301,7 +216,6 @@ public class CarDriver_CSharp : MonoBehaviour
 
         Car_RB.centerOfMass = centerOfMass.localPosition;
 
-        // Cache the wheel controllers using non-generic GetComponent
         if (wheelFR != null) wcFR_Script = wheelFR.gameObject.GetComponent(typeof(WheelController)) as WheelController;
         if (wheelFL != null) wcFL_Script = wheelFL.gameObject.GetComponent(typeof(WheelController)) as WheelController;
         if (wheelBR != null) wcBR_Script = wheelBR.gameObject.GetComponent(typeof(WheelController)) as WheelController;
@@ -317,18 +231,10 @@ public class CarDriver_CSharp : MonoBehaviour
             steeringWheel_script = steeringwheel_VR.GetComponent(typeof(MLWheel)) as MLWheel;
         }
 
-        // debugText.text += " attempting to get oscwheel script ";
         if (OSCWheelobject != null)
         {
             oscWheelScript = OSCWheelobject.GetComponent(typeof(MLWheelOSC)) as MLWheelOSC;
-
-
         }
-        // debugText.text += $" oscwheel script : {oscWheelScript}";
-
-
-        //  RacingGameManagerReference = RacingManagerOBJ.GetComponent(typeof(RacingGameManager)) as RacingGameManager;
-
 
         for (int i = 0; i < speedSMASamplesSize; i++)
         {
@@ -408,50 +314,23 @@ public class CarDriver_CSharp : MonoBehaviour
         engineRPMDial.transform.localRotation = Quaternion.Euler(0, Mathf.Lerp(-135, 135, Mathf.InverseLerp(0, ENGINE_MAX_RPM, carEngine.rpm)), 0);
 
         gearIndicator.text = direction < 0 ? "R" : $"D{currentGear - 1}";
-        //        UpdateDirectionIndicator();
-
-
     }
-
-    /*
-
-    private void UpdateDirectionIndicator()
-    {
-        if (station.IsOccupied && RacingGameManagerReference != null)
-        {
-            // Get player progress from GameManager
-            string playerName = station.GetPlayer().NickName;
-            int lastGate = RacingGameManagerReference.GetPlayerLastGate(playerName);
-            currentTargetGate = (lastGate % RacingGameManagerReference.TotalGates) + 1;
-
-            // Point toward next gate
-            if (directionIndicator != null)
-            {
-                Transform targetGate = RacingGameManagerReference.GetGateTransform(currentTargetGate);
-                if (targetGate != null)
-                {
-                    directionIndicator.transform.LookAt(targetGate);
-                    // Keep the arrow horizontal (only rotate on Y axis)
-                    directionIndicator.transform.rotation = Quaternion.Euler(
-                        0,
-                        directionIndicator.transform.eulerAngles.y,
-                        0
-                    );
-                }
-            }
-
-            // Update text if available
-            if (nextGateText != null)
-            {
-                nextGateText.text = $"Gate: {currentTargetGate}";
-            }
-        }
-    }
-    */
 
     private void FixedUpdate()
     {
-        // Add custom gravity continuous force
+        // 1. VM Halt Detection
+        if (!oscLastAttemptSucceeded)
+        {
+            oscRetryTimer = OSC_RETRY_DELAY;
+            oscLastAttemptSucceeded = true;
+        }
+
+        if (oscRetryTimer > 0)
+        {
+            oscRetryTimer -= Time.fixedDeltaTime;
+        }
+
+        // Custom gravity
         if (useCustomGravity && Car_RB != null)
         {
             Car_RB.AddForce(Physics.gravity * gravityMultiplier, ForceMode.Acceleration);
@@ -460,91 +339,6 @@ public class CarDriver_CSharp : MonoBehaviour
         if (underLocalPlayerControl)
         {
             speed = (wheelFL.rpm * wheelFL.radius * Mathf.PI * 2) * 0.06f;
-
-            // --- OSC OUTBOUND TELEMETRY (MOTION & FFB) ---
-            if (oscWheelScript != null && oscWheelScript.isClientRunning)
-            {
-                Vector3 localVelocity = transform.InverseTransformDirection(Car_RB.velocity);
-                Vector3 acceleration = (localVelocity - lastLocalVelocity) / Time.fixedDeltaTime;
-                lastLocalVelocity = localVelocity;
-
-                if (oscWheelScript.sendMotionTelemetry)
-                {
-                    float surge = Mathf.Clamp(acceleration.z / 20f, -1f, 1f);
-                    float sway = Mathf.Clamp(acceleration.x / 20f, -1f, 1f);
-                    float heave = Mathf.Clamp(acceleration.y / 20f, -1f, 1f);
-
-                    float pitchAngle = transform.eulerAngles.x;
-                    if (pitchAngle > 180) pitchAngle -= 360;
-                    float pitch = Mathf.Clamp(pitchAngle / 45f, -1f, 1f);
-
-                    float rollAngle = transform.eulerAngles.z;
-                    if (rollAngle > 180) rollAngle -= 360;
-                    float roll = Mathf.Clamp(rollAngle / 45f, -1f, 1f);
-
-                    float yawAngle = transform.eulerAngles.y;
-                    float yawRate = (yawAngle - lastYawAngle) / Time.fixedDeltaTime;
-                    if (yawRate > 180) yawRate -= 360;
-                    if (yawRate < -180) yawRate += 360;
-                    lastYawAngle = yawAngle;
-                    float yaw = Mathf.Clamp(yawRate / 90f, -1f, 1f);
-
-                    // DELTA FILTER: Only send if the value changed enough to matter
-                    if (Mathf.Abs(pitch - lastPitch) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/pitch", pitch); lastPitch = pitch; }
-                    if (Mathf.Abs(roll - lastRoll) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/roll", roll); lastRoll = roll; }
-                    if (Mathf.Abs(yaw - lastYaw) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/yaw", yaw); lastYaw = yaw; }
-                    if (Mathf.Abs(surge - lastSurge) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/surge", surge); lastSurge = surge; }
-                    if (Mathf.Abs(sway - lastSway) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/sway", sway); lastSway = sway; }
-                    if (Mathf.Abs(heave - lastHeave) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/heave", heave); lastHeave = heave; }
-                }
-
-                if (oscWheelScript.sendFFBTelemetry)
-                {
-                    float speedNorm = Mathf.Clamp01(Mathf.Abs(speedSMA) / 30f);
-
-                    float springForce = speedNorm * 100f;
-                    float damperForce = speedNorm * 50f;
-
-                    float engineRumble = Mathf.InverseLerp(ENGINE_IDLE_RPM, ENGINE_MAX_RPM, carEngine.rpm) * 25f;
-
-                    float maxSlip = 0f;
-                    if (wcFR_Script != null && wcFR_Script.currentSlip > maxSlip) maxSlip = wcFR_Script.currentSlip;
-                    if (wcFL_Script != null && wcFL_Script.currentSlip > maxSlip) maxSlip = wcFL_Script.currentSlip;
-                    if (wcBR_Script != null && wcBR_Script.currentSlip > maxSlip) maxSlip = wcBR_Script.currentSlip;
-                    if (wcBL_Script != null && wcBL_Script.currentSlip > maxSlip) maxSlip = wcBL_Script.currentSlip;
-
-                    float slipRumble = Mathf.Clamp01(maxSlip) * 100f;
-                    float finalRumble = Mathf.Max(engineRumble, slipRumble);
-
-                    // DELTA FILTER: Only send if the FFB changes by at least 0.5 units
-                    if (Mathf.Abs(springForce - lastSpring) > FFB_THRESHOLD) { oscWheelScript.SendOSCFloat("/ffb/spring", springForce); lastSpring = springForce; }
-                    if (Mathf.Abs(damperForce - lastDamper) > FFB_THRESHOLD) { oscWheelScript.SendOSCFloat("/ffb/damper", damperForce); lastDamper = damperForce; }
-                    if (Mathf.Abs(finalRumble - lastRumble) > FFB_THRESHOLD) { oscWheelScript.SendOSCFloat("/ffb/rumble", finalRumble); lastRumble = finalRumble; }
-                }
-
-
-                // NEW: Tactile Audio Envelope Telemetry
-                /* Experimental
-                if (sendAudioTelemetry)
-                {
-                    // Combine drive and acceleration envelopes for the engine
-                    float audioEngine = Mathf.Clamp01(GetAudioRMS(engineDriveAudio) + GetAudioRMS(engineAccelerationAudio));
-                    float audioWind = Mathf.Clamp01(GetAudioRMS(windAudio));
-
-                    // DELTA FILTER: Only send if the envelope changes enough
-                    if (Mathf.Abs(audioEngine - lastAudioEngine) > MOTION_THRESHOLD)
-                    {
-                        oscWheelScript.SendOSCFloat("/audio/engine", audioEngine);
-                        lastAudioEngine = audioEngine;
-                    }
-                    if (Mathf.Abs(audioWind - lastAudioWind) > MOTION_THRESHOLD)
-                    {
-                        oscWheelScript.SendOSCFloat("/audio/wind", audioWind);
-                        lastAudioWind = audioWind;
-                    }
-                }
-                */
-            }
         }
         else
         {
@@ -564,17 +358,6 @@ public class CarDriver_CSharp : MonoBehaviour
 
         localControlIndicator.SetActive(underLocalPlayerControl);
 
-        /* disabled to help performance
-        if (oscWheelScript != null)
-        {
-            debugText.text = $"Engine RPM: {carEngine.rpm}\nCurrent Gear: {currentGear}\nThrottle: {throttle:F3}\nDirection: {direction}\nEngine State: {carEngine.state}\n OSC Steering Value : {oscWheelScript.currentOSCSteeringValue}\n OSC gas value {oscWheelScript.currentOSCGasValue}\n OSC brake value : {oscWheelScript.currentOSCBrakeValue}  ";
-        }
-        else
-        {
-            debugText.text = $"Engine RPM: {carEngine.rpm}\nCurrent Gear: {currentGear}\nThrottle: {throttle:F3}\nDirection: {direction}\nEngine State: {carEngine.state}\n ";
-        }
-        */
-
         if (underLocalPlayerControl)
         {
             if (speedSMA > 1 && ((direction > 0 && speedSMA < 0) || (direction < 0 && speedSMA > 0)))
@@ -592,9 +375,25 @@ public class CarDriver_CSharp : MonoBehaviour
                 if ((throttle > 0 && direction > 0) || (throttle < 0 && direction < 0))
                 {
                     float rpmRelativeT = carEngine.GetEngineTorque(carEngine.rpm);
-
                     float divisor = isAllWheelDrive ? 4f : 2f;
-                    float wheelTorque = throttle * rpmRelativeT * MOTOR_MAX_TORQUE * (gearFactor * gearRatios[currentGear - 1]) / divisor;
+
+                    // --- REALISTIC TRACTION CONTROL ---
+                    float currentMaxTorque = MOTOR_MAX_TORQUE;
+                    if (useRealisticHandling)
+                    {
+                        float maxSlip = 0f;
+                        if (wcFR_Script != null && wcFR_Script.currentSlip > maxSlip) maxSlip = wcFR_Script.currentSlip;
+                        if (wcFL_Script != null && wcFL_Script.currentSlip > maxSlip) maxSlip = wcFL_Script.currentSlip;
+                        if (wcBR_Script != null && wcBR_Script.currentSlip > maxSlip) maxSlip = wcBR_Script.currentSlip;
+                        if (wcBL_Script != null && wcBL_Script.currentSlip > maxSlip) maxSlip = wcBL_Script.currentSlip;
+
+                        if (maxSlip > 0.4f)
+                        {
+                            currentMaxTorque *= Mathf.Lerp(1f, 0.2f, (maxSlip - 0.4f) / 0.6f);
+                        }
+                    }
+
+                    float wheelTorque = throttle * rpmRelativeT * currentMaxTorque * (gearFactor * gearRatios[currentGear - 1]) / divisor;
 
                     wheelBL.motorTorque = wheelTorque;
                     wheelBR.motorTorque = wheelTorque;
@@ -633,21 +432,29 @@ public class CarDriver_CSharp : MonoBehaviour
             wheelFR.motorTorque = 0;
         }
 
+        // --- REALISTIC SPEED-SENSITIVE STEERING ---
+        float currentSteeringInput = steering;
+        if (useRealisticHandling)
+        {
+            float speedFactor = Mathf.Clamp01(Mathf.Abs(speedSMA) / 40f);
+            currentSteeringInput *= Mathf.Lerp(1f, 0.25f, speedFactor);
+        }
+
         if (useAckerman)
         {
             float ackAngleLeft = 0;
             float ackAngleRight = 0;
 
             float halfTrack = track / 2;
-            if (steering > 0)
+            if (currentSteeringInput > 0)
             {
-                ackAngleLeft = Mathf.Rad2Deg * Mathf.Atan(wheelBase / (turningRadius + halfTrack)) * steering / 2;
-                ackAngleRight = Mathf.Rad2Deg * Mathf.Atan(wheelBase / (turningRadius - halfTrack)) * steering / 2;
+                ackAngleLeft = Mathf.Rad2Deg * Mathf.Atan(wheelBase / (turningRadius + halfTrack)) * currentSteeringInput / 2;
+                ackAngleRight = Mathf.Rad2Deg * Mathf.Atan(wheelBase / (turningRadius - halfTrack)) * currentSteeringInput / 2;
             }
-            else if (steering < 0)
+            else if (currentSteeringInput < 0)
             {
-                ackAngleLeft = Mathf.Rad2Deg * Mathf.Atan(wheelBase / (turningRadius - halfTrack)) * steering / 2;
-                ackAngleRight = Mathf.Rad2Deg * Mathf.Atan(wheelBase / (turningRadius + halfTrack)) * steering / 2;
+                ackAngleLeft = Mathf.Rad2Deg * Mathf.Atan(wheelBase / (turningRadius - halfTrack)) * currentSteeringInput / 2;
+                ackAngleRight = Mathf.Rad2Deg * Mathf.Atan(wheelBase / (turningRadius + halfTrack)) * currentSteeringInput / 2;
             }
 
             wheelFR.steerAngle = ackAngleRight;
@@ -666,7 +473,7 @@ public class CarDriver_CSharp : MonoBehaviour
         }
         else
         {
-            float frontSteer = steering * STEERING_ANGLE_MAX;
+            float frontSteer = currentSteeringInput * STEERING_ANGLE_MAX;
             wheelFR.steerAngle = frontSteer;
             wheelFL.steerAngle = frontSteer;
 
@@ -693,6 +500,97 @@ public class CarDriver_CSharp : MonoBehaviour
 
         HandleEngineAudioEffects();
         HandleOtherAudioEffects();
+
+
+        // -------------------------------------------------------------------------
+        // 2. OSC OUTBOUND TELEMETRY (SAFE ZONE)
+        // -------------------------------------------------------------------------
+        if (underLocalPlayerControl && oscRetryTimer <= 0f && oscWheelScript != null && oscWheelScript.isClientRunning)
+        {
+            // The Canary Flag test
+            oscLastAttemptSucceeded = false;
+            oscWheelScript.SendOSCFloat("/ping", 0f);
+            oscLastAttemptSucceeded = true;
+
+            Vector3 localVelocity = transform.InverseTransformDirection(Car_RB.velocity);
+            Vector3 acceleration = (localVelocity - lastLocalVelocity) / Time.fixedDeltaTime;
+            lastLocalVelocity = localVelocity;
+
+            if (oscWheelScript.sendMotionTelemetry)
+            {
+                float surge = Mathf.Clamp(acceleration.z / 20f, -1f, 1f);
+                float sway = Mathf.Clamp(acceleration.x / 20f, -1f, 1f);
+                float heave = Mathf.Clamp(acceleration.y / 20f, -1f, 1f);
+
+                float pitchAngle = transform.eulerAngles.x;
+                if (pitchAngle > 180) pitchAngle -= 360;
+                float pitch = Mathf.Clamp(pitchAngle / 45f, -1f, 1f);
+
+                float rollAngle = transform.eulerAngles.z;
+                if (rollAngle > 180) rollAngle -= 360;
+                float roll = Mathf.Clamp(rollAngle / 45f, -1f, 1f);
+
+                float yawAngle = transform.eulerAngles.y;
+                float yawRate = (yawAngle - lastYawAngle) / Time.fixedDeltaTime;
+                if (yawRate > 180) yawRate -= 360;
+                if (yawRate < -180) yawRate += 360;
+                lastYawAngle = yawAngle;
+                float yaw = Mathf.Clamp(yawRate / 90f, -1f, 1f);
+
+                if (Mathf.Abs(pitch - lastPitch) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/pitch", pitch); lastPitch = pitch; }
+                if (Mathf.Abs(roll - lastRoll) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/roll", roll); lastRoll = roll; }
+                if (Mathf.Abs(yaw - lastYaw) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/yaw", yaw); lastYaw = yaw; }
+                if (Mathf.Abs(surge - lastSurge) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/surge", surge); lastSurge = surge; }
+                if (Mathf.Abs(sway - lastSway) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/sway", sway); lastSway = sway; }
+                if (Mathf.Abs(heave - lastHeave) > MOTION_THRESHOLD) { oscWheelScript.SendOSCFloat("/motion/heave", heave); lastHeave = heave; }
+            }
+
+            if (oscWheelScript.sendFFBTelemetry)
+            {
+                float speedNorm = Mathf.Clamp01(Mathf.Abs(speedSMA) / 30f);
+                float springForce = speedNorm * 100f;
+                float damperForce = speedNorm * 50f;
+                float engineRumble = Mathf.InverseLerp(ENGINE_IDLE_RPM, ENGINE_MAX_RPM, carEngine.rpm) * 25f;
+
+                float maxSlip = 0f;
+                if (wcFR_Script != null && wcFR_Script.currentSlip > maxSlip) maxSlip = wcFR_Script.currentSlip;
+                if (wcFL_Script != null && wcFL_Script.currentSlip > maxSlip) maxSlip = wcFL_Script.currentSlip;
+                if (wcBR_Script != null && wcBR_Script.currentSlip > maxSlip) maxSlip = wcBR_Script.currentSlip;
+                if (wcBL_Script != null && wcBL_Script.currentSlip > maxSlip) maxSlip = wcBL_Script.currentSlip;
+
+                float slipRumble = Mathf.Clamp01(maxSlip) * 100f;
+                float finalRumble = Mathf.Max(engineRumble, slipRumble);
+
+                if (Mathf.Abs(springForce - lastSpring) > FFB_THRESHOLD) { oscWheelScript.SendOSCFloat("/ffb/spring", springForce); lastSpring = springForce; }
+                if (Mathf.Abs(damperForce - lastDamper) > FFB_THRESHOLD) { oscWheelScript.SendOSCFloat("/ffb/damper", damperForce); lastDamper = damperForce; }
+                if (Mathf.Abs(finalRumble - lastRumble) > FFB_THRESHOLD) { oscWheelScript.SendOSCFloat("/ffb/rumble", finalRumble); lastRumble = finalRumble; }
+            }
+
+            // --- SAFE TACTILE AUDIO TELEMETRY ---
+            if (sendAudioTelemetry)
+            {
+                audioTelemetryTimer += Time.fixedDeltaTime;
+                if (audioTelemetryTimer >= AUDIO_TELEMETRY_RATE)
+                {
+                    audioTelemetryTimer = 0f;
+
+                    float audioEngine = 0f;
+                    if (engineDriveAudio != null && engineAccelerationAudio != null)
+                    {
+                        audioEngine = Mathf.Clamp01(engineDriveAudio.volume + engineAccelerationAudio.volume);
+                    }
+
+                    float audioWind = 0f;
+                    if (windAudio != null)
+                    {
+                        audioWind = Mathf.Clamp01(windAudio.volume);
+                    }
+
+                    oscWheelScript.SendOSCFloat("/audio/engine", audioEngine);
+                    oscWheelScript.SendOSCFloat("/audio/wind", audioWind);
+                }
+            }
+        }
     }
 
     private void OnCollisionEnter(Collision collision)
@@ -701,20 +599,12 @@ public class CarDriver_CSharp : MonoBehaviour
         {
             float impactMag = collision.impulse.magnitude / 10f;
 
-            /*
-            var contact = collision.GetContact(0);
-            if (contact != null)
+            if (sendAudioTelemetry && oscRetryTimer <= 0f && oscWheelScript != null && oscWheelScript.isClientRunning)
             {
-                AudioSource.PlayClipAtPoint(impact, contact.point, impactMag);
-            }*/
-
-            // NEW: Send instant impact spike for tactile feedback experimental
-            /*
-            if (sendAudioTelemetry && oscWheelScript != null && oscWheelScript.isClientRunning)
-            {
+                oscLastAttemptSucceeded = false;
                 oscWheelScript.SendOSCFloat("/audio/impact", Mathf.Clamp01(impactMag));
+                oscLastAttemptSucceeded = true;
             }
-            */
         }
     }
 
@@ -731,7 +621,6 @@ public class CarDriver_CSharp : MonoBehaviour
         Debug.Log($"Current driver : {currentDriver}");
         ownerName = currentDriver.NickName;
 
-        // Load thumbnail with callback
         currentDriver.LoadPlayerThumbnail((texture) =>
         {
             if (texture != null)
@@ -739,7 +628,6 @@ public class CarDriver_CSharp : MonoBehaviour
                 Decal_1.material.mainTexture = texture;
                 if (Decal_2 != null)
                 {
-
                     Decal_2.material.mainTexture = texture;
                 }
             }
@@ -768,17 +656,13 @@ public class CarDriver_CSharp : MonoBehaviour
 
     private void HandleDesktopModeInput(UserStationInput input)
     {
-        // --- 1. THROTTLE & BRAKES ---
         if (useOSCWheelforInput && oscWheelScript != null && oscWheelScript.sendInputs)
         {
-            // Normalize -1 to 1 hardware inputs into a 0 to 1 range
             float normalizedGas = (oscWheelScript.currentOSCGasValue + 1f) / 2f;
             float normalizedBrake = (oscWheelScript.currentOSCBrakeValue + 1f) / 2f;
 
-            // Subtract brake from gas to create a perfect -1 to 1 throttle value
             throttle = normalizedGas - normalizedBrake;
 
-            // We MUST apply the VR-style direction and braking logic here so the pedals can reverse the car!
             if (direction > 0)
             {
                 if (throttle > NEAR_ZERO)
@@ -821,7 +705,6 @@ public class CarDriver_CSharp : MonoBehaviour
         }
         else
         {
-            // Existing Keyboard Throttle Logic
             if (input.KeyboardMove.y > 0.5f)
             {
                 throttle += THROTTLE_FACTOR;
@@ -886,15 +769,12 @@ public class CarDriver_CSharp : MonoBehaviour
             }
         }
 
-        // --- 2. STEERING ---
         if (useOSCWheelforInput && oscWheelScript != null && oscWheelScript.sendInputs)
         {
-            // Directly apply the clamped OSC value
             steering = Mathf.Clamp(oscWheelScript.currentOSCSteeringValue, -1f, 1f);
         }
         else
         {
-            // Existing Keyboard Steering Logic
             if (input.KeyboardMove.x > 0.5f)
             {
                 steering += STEERING_FACTOR;
@@ -931,37 +811,28 @@ public class CarDriver_CSharp : MonoBehaviour
 
     private void HandleVRModeInput(UserStationInput input)
     {
-        // 1. Check for OSC Override FIRST
         if (useOSCWheelforInput && oscWheelScript != null && oscWheelScript.sendInputs)
         {
-            // --- OSC Throttle & Brake ---
-            // Normalize -1 to 1 hardware inputs into a 0 to 1 range
             float normalizedGas = (oscWheelScript.currentOSCGasValue + 1f) / 2f;
             float normalizedBrake = (oscWheelScript.currentOSCBrakeValue + 1f) / 2f;
             throttle = normalizedGas - normalizedBrake;
 
-            // --- OSC Steering ---
-            // Direct assignment. We remove Mathf.MoveTowards here to stop the jittering 
-            // and give 1:1 responsiveness with the hardware wheel.
             steering = Mathf.Clamp(oscWheelScript.currentOSCSteeringValue, -1f, 1f);
 
-            // Visually sync the VR steering wheel prop to the OSC input so it matches the real world
             if (useSteeringWheelforVR && steeringWheel_script != null)
             {
-                float targetAngle = steering * 90f; // Adjust the 90f multiplier based on your wheel's max rotation
+                float targetAngle = steering * 90f;
                 steeringWheel_script.wheelVisual.localRotation = Quaternion.Euler(0, 0, targetAngle);
             }
         }
         else
         {
-            // 2. Standard VR Input Fallback (Controllers or Virtual Wheel)
             throttle = input.RightTrigger - input.LeftTrigger;
 
             float steeringTarget = 0;
 
             if (useSteeringWheelforVR && steeringWheel_script != null)
             {
-                // Calculate rotation from the interactable VR wheel
                 Quaternion localRot = Quaternion.Inverse(steeringWheel_script.pivotPoint.rotation) * steeringWheel_script.wheelVisual.rotation;
                 float wheelAngle = localRot.eulerAngles.z;
                 if (wheelAngle > 180) wheelAngle -= 360;
@@ -976,11 +847,9 @@ public class CarDriver_CSharp : MonoBehaviour
                 steeringTarget = input.RightControl.x;
             }
 
-            // MoveTowards is perfectly fine here to smooth out VR thumbsticks and hand tracking
             steering = Mathf.MoveTowards(steering, steeringTarget, 1.5f * Time.deltaTime);
         }
 
-        // 3. Universal Direction & Braking Logic (Applies to both OSC and VR inputs)
         if (direction > 0)
         {
             if (throttle > NEAR_ZERO)
