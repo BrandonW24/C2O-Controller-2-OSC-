@@ -72,10 +72,33 @@ public class MLWheelOSC : MonoBehaviour
 
     public ParticleSystem ScoredParticleSystem;
 
-    public GameObject terrainmanager_object;
-    private MarsTerrainManager terrainmanager_Script;
+ //   public GameObject terrainmanager_object;
+  //  private MarsTerrainManager terrainmanager_Script;
 
     public CarDriver_CSharp car_scriptReference;
+
+    // --- Turn Signal Variables ---
+    [Header("Turn Signals")]
+    public float blinkRate = 0.5f;
+    private bool isLeftTurnSignalActive = false;
+    private bool isRightTurnSignalActive = false;
+    private Coroutine leftSignalCoroutine;
+    private Coroutine rightSignalCoroutine;
+    public Light Left_turnsignal;
+    public Light Right_turnsignal;
+    public GameObject LeftTurnIndicator;
+    public GameObject RightTurnIndicator;
+
+
+    /// <summary>
+    /// Sends the local OSC address pattern to C2O so it can update its Global Base Address automatically.
+    /// Called by CarDriver_CSharp when the local player sits down.
+    /// </summary>
+    public void NotifyC2OOfAddress()
+    {
+        osc.SendMessage("/c2o/setBaseAddress", oscAddressPattern);
+        Log($"Notified C2O of base address: {oscAddressPattern}");
+    }
 
     public void AddScore(int points)
     {
@@ -90,6 +113,67 @@ public class MLWheelOSC : MonoBehaviour
         {
             ScoredParticleSystem.Play();
             Score.text = "Score: " + currentScore;
+        }
+    }
+
+
+    private void ToggleRightTurnSignal()
+    {
+        if (Right_turnsignal == null) return;
+
+        isRightTurnSignalActive = !isRightTurnSignalActive;
+        Log("Right turn signal toggled: " + isRightTurnSignalActive);
+
+        if (isRightTurnSignalActive)
+        {
+            // Cancel the left signal if it happens to be on
+            if (isLeftTurnSignalActive) ToggleLeftTurnSignal();
+
+            rightSignalCoroutine = StartCoroutine(BlinkLight(Right_turnsignal, RightTurnIndicator));
+        }
+        else
+        {
+            if (rightSignalCoroutine != null) StopCoroutine(rightSignalCoroutine);
+            Right_turnsignal.enabled = false; // Force it off when cancelled
+            RightTurnIndicator.SetActive(false);
+
+        }
+    }
+
+    private void ToggleLeftTurnSignal()
+    {
+        if (Left_turnsignal == null) return;
+
+        isLeftTurnSignalActive = !isLeftTurnSignalActive;
+        Log("Left turn signal toggled: " + isLeftTurnSignalActive);
+
+        if (isLeftTurnSignalActive)
+        {
+            // Cancel the right signal if it happens to be on
+            if (isRightTurnSignalActive) ToggleRightTurnSignal();
+
+            leftSignalCoroutine = StartCoroutine(BlinkLight(Left_turnsignal, LeftTurnIndicator));
+        }
+        else
+        {
+            if (leftSignalCoroutine != null) StopCoroutine(leftSignalCoroutine);
+            Left_turnsignal.enabled = false; // Force it off when cancelled
+            LeftTurnIndicator.SetActive(false);
+        }
+    }
+
+    private IEnumerator BlinkLight(Light targetLight, GameObject indicator)
+    {
+        while (true)
+        {
+            if (targetLight != null)
+            {
+                targetLight.enabled = !targetLight.enabled;
+
+                if(indicator != null) indicator.SetActive(targetLight.enabled);
+
+            }
+            yield return new WaitForSeconds(blinkRate);
         }
     }
 
@@ -113,7 +197,7 @@ public class MLWheelOSC : MonoBehaviour
         tokenResetCar = this.AddEventHandler(EVENT_RESET_CAR, OnCarResetNetwork);
         tokenScanEnvironment = this.AddEventHandler(EVENT_SCAN, OnCarScanNetwork);
 
-        terrainmanager_Script = terrainmanager_object.GetComponent(typeof(MarsTerrainManager)) as MarsTerrainManager;
+    //    terrainmanager_Script = terrainmanager_object.GetComponent(typeof(MarsTerrainManager)) as MarsTerrainManager;
         car_scriptReference = CarObject.GetComponent(typeof(CarDriver_CSharp)) as CarDriver_CSharp;
         tokenUprightCar = this.AddEventHandler(EVENT_UPRIGHT_CAR, OnCarUprightNetwork);
         isClientRunning = true;
@@ -150,10 +234,10 @@ public class MLWheelOSC : MonoBehaviour
     private void OnCarScanNetwork(object[] args)
     {
         Log("Car attempting to scan");
-        if (terrainmanager_Script != null)
-        {
-            terrainmanager_Script.TriggerScan();
-        }
+      //  if (terrainmanager_Script != null)
+    //    {
+      //      terrainmanager_Script.TriggerScan();
+       // }
     }
 
     private void OnCarResetNetwork(object[] args)
@@ -255,6 +339,17 @@ public class MLWheelOSC : MonoBehaviour
             {
                 Log("Upright button pressed. Broadcasting upright event...");
                 this.InvokeNetwork(EVENT_UPRIGHT_CAR, EventTarget.All, null);
+            }
+
+            // --- Turn Signals ---
+            if (inputIndex == 4 && isPressed == 1)
+            {
+                ToggleRightTurnSignal();
+            }
+
+            if (inputIndex == 5 && isPressed == 1)
+            {
+                ToggleLeftTurnSignal();
             }
         }
 
